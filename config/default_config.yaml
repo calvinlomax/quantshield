@@ -1,0 +1,62 @@
+data:
+  tickers:
+    - SPY
+    - QQQ
+    - IWM
+    - EFA
+    - EEM
+    - TLT
+    - LQD
+    - GLD
+    - VNQ
+  asset_class_map:
+    SPY: equity
+    QQQ: equity
+    IWM: equity
+    EFA: equity
+    EEM: equity
+    TLT: bond
+    LQD: bond
+    GLD: commodity
+    VNQ: real_estate
+  start_date: "2015-01-01"
+  end_date: null
+  cache_dir: "data/raw"
+  use_cache: true
+  force_refresh: false
+
+preprocessing:
+  return_type: "simple"
+  annualization_factor: 252
+  drop_all_nan_assets: true
+  forward_fill_prices: true
+
+risk:
+  mean_estimator: "historical"
+  covariance_estimator: "ledoit_wolf"
+  ewma_span: 60
+  annualize: true
+
+optimization:
+  objective: "min_variance"
+  risk_aversion: 3.0
+  long_only: true
+  min_weight: 0.0
+  max_weight: 0.35
+  turnover_penalty: 0.0025
+  target_volatility: null
+  fallback_to_equal_weight: true
+  exposure_caps: {}
+
+backtest:
+  lookback_days: 252
+  expanding_window: false
+  min_history_days: 126
+  rebalance_frequency: "M"
+  benchmark_ticker: "SPY"
+
+reporting:
+  output_dir: "outputs"
+  figures_dir: "outputs/figures"
+  tables_dir: "outputs/tables"
+  rolling_vol_window: 63

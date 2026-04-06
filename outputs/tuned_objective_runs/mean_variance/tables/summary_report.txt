@@ -1,0 +1,38 @@
+QuantShield Summary Report
+=========================
+
+Universe: SPY, QQQ, GLD
+Sample window: 2015-01-02 to 2026-04-06
+Lookback window: 252 trading days
+Rebalance frequency: M
+Covariance estimator: historical
+Optimization objective: mean_variance
+Latest constraint check: no violations reported
+
+Final weights:
+  GLD: 100.00%
+  SPY: 0.00%
+  QQQ: 0.00%
+
+Performance summary:
+              annualized_return  annualized_volatility  sharpe_ratio  sortino_ratio  max_drawdown  calmar_ratio
+portfolio                0.1772                 0.2052        0.8637         1.0759       -0.3189        0.5558
+equal_weight             0.1584                 0.1452        1.0908         1.3805       -0.2297        0.6897
+benchmark                0.1320                 0.1797        0.7343         0.8917       -0.3372        0.3914
+
+Average turnover: 0.1824
+Herfindahl index: 1.0000
+Top weight share: 1.0000
+
+Risk attribution summary:
+     weight  component_risk  percentage_risk
+GLD  1.0000          0.2780           1.0000
+SPY  0.0000          0.0000           0.0000
+QQQ  0.0000          0.0000           0.0000
+
+Stress test summary:
+                           stressed_return  stressed_volatility largest_loss_contributor  largest_loss_contribution                                                                           notes
+equity_market_shock                -0.0000                  NaN                      SPY                    -0.0000                                     Custom return shock applied asset by asset.
+interest_rate_shock_proxy           0.0000                  NaN                      SPY                     0.0000                                     Custom return shock applied asset by asset.
+correlation_spike                      NaN               0.3475                      GLD                     0.3475  Returns are unchanged in this scenario; only portfolio volatility is stressed.
+single_asset_crash                 -0.3000                  NaN                      GLD                    -0.3000                                     Custom return shock applied asset by asset.

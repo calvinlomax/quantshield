@@ -1,0 +1,18 @@
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+.DS_Store
+.ipynb_checkpoints/
+.venv/
+venv/
+build/
+dist/
+
+# Generated market data and reports
+data/raw/*.csv
+data/processed/*.csv
+outputs/figures/*.png
+outputs/tables/*.csv
+outputs/tables/*.txt

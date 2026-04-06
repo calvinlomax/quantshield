@@ -1,0 +1,38 @@
+QuantShield Summary Report
+=========================
+
+Universe: SPY, QQQ, GLD
+Sample window: 2015-01-02 to 2026-04-06
+Lookback window: 252 trading days
+Rebalance frequency: M
+Covariance estimator: ledoit_wolf
+Optimization objective: min_variance
+Latest constraint check: no violations reported
+
+Final weights:
+  SPY: 48.23%
+  GLD: 33.50%
+  QQQ: 18.27%
+
+Performance summary:
+              annualized_return  annualized_volatility  sharpe_ratio  sortino_ratio  max_drawdown  calmar_ratio
+portfolio                0.1360                 0.1224        1.1113         1.4076       -0.1979        0.6873
+equal_weight             0.1584                 0.1452        1.0908         1.3805       -0.2297        0.6897
+benchmark                0.1320                 0.1797        0.7343         0.8917       -0.3372        0.3914
+
+Average turnover: 0.0278
+Herfindahl index: 0.3782
+Top weight share: 0.4823
+
+Risk attribution summary:
+     weight  component_risk  percentage_risk
+SPY  0.4823          0.0786           0.4823
+GLD  0.3350          0.0546           0.3350
+QQQ  0.1827          0.0298           0.1827
+
+Stress test summary:
+                           stressed_return  stressed_volatility largest_loss_contributor  largest_loss_contribution                                                                           notes
+equity_market_shock                -0.1330                  NaN                      SPY                    -0.0965                                     Custom return shock applied asset by asset.
+interest_rate_shock_proxy           0.0000                  NaN                      SPY                     0.0000                                     Custom return shock applied asset by asset.
+correlation_spike                      NaN               0.2621                      SPY                     0.1132  Returns are unchanged in this scenario; only portfolio volatility is stressed.
+single_asset_crash                 -0.1447                  NaN                      SPY                    -0.1447                                     Custom return shock applied asset by asset.
