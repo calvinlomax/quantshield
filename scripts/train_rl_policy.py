@@ -1,4 +1,4 @@
-"""Train the optional transformer actor-critic policy from saved suite weights."""
+"""Train the QuantShield transformer actor-critic policy from saved suite weights."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ DEFAULT_OBJECTIVES = ["min_variance", "mean_variance", "risk_parity", "equal_wei
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train the transformer actor-critic policy from saved suite weights.")
+    parser = argparse.ArgumentParser(description="Train the QuantShield transformer actor-critic policy from saved suite weights.")
     parser.add_argument("--config", default="config/default_config.yaml", help="Path to the base YAML config.")
     parser.add_argument(
         "--suite-root",

@@ -1,4 +1,4 @@
-"""Run the full QuantShield workflow."""
+"""Run the classical QuantShield benchmark workflow."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from quantshield.pipeline import run_pipeline, save_pipeline_artifacts
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the full QuantShield pipeline.")
+    parser = argparse.ArgumentParser(description="Run the classical QuantShield benchmark pipeline.")
     parser.add_argument("--config", default="config/default_config.yaml", help="Path to YAML configuration file.")
     parser.add_argument("--force-refresh", action="store_true", help="Refetch data even if cached data exists.")
     parser.add_argument("--objective", help="Override optimization objective.")

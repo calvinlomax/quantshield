@@ -1,31 +1,40 @@
 # QuantShield
 
-QuantShield is a local Python project for constraint-aware portfolio construction, risk estimation, rolling backtesting, stress testing, and reporting. It is designed around a practical workflow:
+QuantShield is a local machine learning portfolio research project centered on a transformer-based actor-critic policy. The classical portfolio engine is still in the repo, but it now serves a supporting role: it downloads market data from `yfinance`, generates constrained benchmark portfolios, and produces the demonstration weights used to train the policy.
 
-1. Download market data locally from `yfinance`
-2. Cache raw prices for reproducibility
-3. Clean and align the price panel
-4. Estimate returns and covariance
-5. Solve constrained allocation problems
-6. Run an out-of-sample rolling backtest
-7. Stress test and decompose risk
-8. Save tables and matplotlib figures
+The primary workflow is:
 
-The base config universe is a diversified ETF basket:
+1. Download and cache market data locally from `yfinance`
+2. Run the tuned benchmark suite on `SPY, QQQ, GLD`
+3. Convert saved weight histories into an offline training dataset
+4. Train a cross-asset attention actor-critic with a continuous-action simplex head
+5. Save the policy checkpoint, predictions, evaluation tables, and benchmark comparisons
+
+The broader ETF basket remains available for classical experiments:
 `SPY, QQQ, IWM, EFA, EEM, TLT, LQD, GLD, VNQ`
 
-The canonical objective suite in this repo is the tuned suite, which uses:
-`SPY, QQQ, GLD`
+## Why QuantShield
 
-## Why It Is Useful
+QuantShield is useful if you want a reproducible local workflow for portfolio ML without depending on pre-downloaded datasets or cloud-only research stacks.
 
-QuantShield provides a stable baseline for portfolio research without relying on pre-downloaded CSVs or cloud-only data workflows. It emphasizes:
+- All training data is fetched locally with Python from `yfinance`
+- Raw prices are cached for reproducibility
+- The ML model is benchmarked against explicit constrained allocation rules
+- The policy is trained on saved weight histories instead of opaque manual labels
+- Outputs are written as CSV, TXT, PNG, and `.pt` artifacts for inspection
 
-- local reproducibility through raw-data caching
-- modular risk estimators and optimizers
-- realistic portfolio constraints
-- explicit walk-forward backtesting to avoid lookahead bias
-- transparent outputs in CSV, TXT, and PNG form
+## What Is The Central Model
+
+The central model is a transformer-style actor-critic policy implemented in [`src/quantshield/rl.py`](src/quantshield/rl.py).
+
+- Input state: trailing cross-asset return window
+- State features per asset: raw returns, volatility-normalized returns, cumulative returns
+- Encoder: cross-asset attention block over asset tokens
+- Actor head: Dirichlet continuous-action head that outputs portfolio weights on the simplex
+- Critic head: action-conditioned value head
+- Training target: next-period excess return versus `SPY`
+
+This is an offline policy-learning setup. The classical optimizer suite is the demonstration generator and benchmark layer, not the main product.
 
 ## Project Architecture
 
@@ -43,6 +52,8 @@ QuantShield/
   outputs/
     figures/
     tables/
+    tuned_objective_runs/
+    rl_policy/
   src/
     quantshield/
       __init__.py
@@ -55,14 +66,16 @@ QuantShield/
       pipeline.py
       plotting.py
       preprocessing.py
-      rl.py
       reporting.py
       risk.py
+      rl.py
       stress_test.py
+      tuned_suite.py
       utils.py
   scripts/
     fetch_data.py
     run_backtest.py
+    run_ml_pipeline.py
     run_pipeline.py
     run_tuned_suite.py
     train_rl_policy.py
@@ -78,99 +91,69 @@ QuantShield/
     test_risk.py
 ```
 
-## Methodology
+## ML-First Methodology
 
-### Data
+### 1. Local Data Collection
 
 - Primary source: `yfinance`
-- Field used: adjusted close, with a documented fallback to close if needed
+- Prices are fetched locally in Python when the pipeline runs
 - Raw downloads are cached under `data/raw/`
 - Cleaned aligned prices and daily returns are saved under `data/processed/`
+- No pre-downloaded CSVs are used as the primary source
 
-### Return Preparation
+### 2. Benchmark Demonstration Generation
 
-- Supports simple returns and log returns
-- Sorts and de-duplicates dates
-- Forward-fills interior missing price gaps
-- Drops non-overlapping dates after alignment
-- Annualization defaults to `252` trading days
+The tuned benchmark suite is defined in [`src/quantshield/tuned_suite.py`](src/quantshield/tuned_suite.py).
 
-### Risk Estimation
+- Universe: `SPY, QQQ, GLD`
+- Objectives: `min_variance`, `mean_variance`, `risk_parity`, `equal_weight`
+- Rebalance style: rolling walk-forward backtest
+- Constraint set: long-only, weights sum to one, max-weight controls, optional turnover penalty
+- Risk estimators: historical covariance and Ledoit-Wolf shrinkage
 
-Implemented estimators:
+These benchmark portfolios generate the saved `weights_history.csv` files used by the ML policy trainer.
 
-- historical mean return
-- historical covariance
-- Ledoit-Wolf shrinkage covariance
-- exponentially weighted covariance
+### 3. Offline Policy Dataset
 
-Recommended default:
+The training dataset is built from:
 
-- covariance estimator: `ledoit_wolf`
+- saved tuned-suite weight histories
+- locally prepared return windows
+- realized forward returns between rebalance dates
 
-### Portfolio Optimization
+Each sample contains:
 
-Implemented allocation methods:
+- a lookback window of cross-asset features
+- the demonstrated portfolio weights
+- realized raw return
+- realized excess return versus `SPY`
 
-- equal weight benchmark
-- minimum variance
-- mean-variance
-- risk parity style approximation
+### 4. Transformer Actor-Critic Training
 
-Supported constraints:
+The policy trainer:
 
-- weights sum to 1
-- long-only by default
-- configurable min and max asset weights
-- optional turnover penalty relative to previous weights
-- optional target volatility cap
-- optional exposure caps using asset-class metadata
+- encodes each asset as a token
+- uses cross-asset attention to model interactions between assets
+- predicts continuous portfolio weights through a Dirichlet policy head
+- learns a critic on action-conditioned rewards
+- tracks training and validation performance against the benchmark demonstrations
 
-The optimizer uses `scipy.optimize.minimize` with SLSQP so objectives and constraints remain easy to extend.
+### 5. Evaluation
 
-### Rolling Backtest
+The saved evaluation artifacts include:
 
-The backtester:
-
-- uses only data available up to each rebalance date
-- supports rolling and expanding training windows
-- rebalances monthly by default
-- compares the optimized portfolio to equal weight and a benchmark like `SPY`
-- records rebalance logs, weight history, and turnover
-
-### Risk Attribution
-
-Implemented:
-
-- marginal contribution to risk
-- component contribution to risk
-- percentage contribution to risk
-
-### Stress Testing
-
-Implemented scenarios:
-
-- equity market shock
-- interest-rate shock proxy on bond-like assets
-- correlation spike regime
-- single-asset crash
-- user-defined custom shock vector
-
-### Transformer Actor-Critic Policy
-
-An optional RL extension is included for policy learning from the saved tuned-suite weights.
-
-- offline dataset source: saved `weights_history.csv` files from the tuned suite
-- state representation: trailing cross-asset return window with raw returns, z-scored returns, and cumulative-return features
-- architecture: transformer-style cross-asset attention encoder over asset tokens
-- actor head: continuous-action Dirichlet policy on the portfolio simplex
-- critic head: action-conditioned value head for offline actor-critic training
-- reward target: next-period excess return versus `SPY`
-- usage: experimental policy-learning layer on top of the classical optimizer suite
+- policy checkpoint
+- training history
+- policy-vs-demo predictions
+- latest policy weights
+- evaluation summary on train, validation, and full samples
+- ML pipeline summary text
 
 ## Installation
 
-Python 3.11+ is required.
+Python `3.11+` is required.
+
+Base setup:
 
 ```bash
 python3 -m venv .venv
@@ -178,7 +161,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Optional RL dependencies:
+Install the ML dependency layer:
 
 ```bash
 pip install -r requirements-rl.txt
@@ -187,78 +170,80 @@ pip install -r requirements-rl.txt
 Optional editable install:
 
 ```bash
-pip install -e .
-```
-
-Editable install with RL extras:
-
-```bash
 pip install -e .[rl]
 ```
 
-## How To Fetch Data Locally Using yfinance
+## Run The Main ML Workflow
 
-This project expects market data to be downloaded locally when you run it.
+This is the canonical command for the repo:
+
+```bash
+python scripts/run_ml_pipeline.py
+```
+
+It will:
+
+1. fetch or reuse cached market data from `yfinance`
+2. run the tuned benchmark suite
+3. build the offline policy dataset
+4. train the transformer actor-critic model
+5. save benchmark artifacts under `outputs/tuned_objective_runs/`
+6. save ML artifacts under `outputs/rl_policy/`
+
+Useful overrides:
+
+```bash
+python scripts/run_ml_pipeline.py \
+  --epochs 60 \
+  --batch-size 64 \
+  --lookback-window 84
+```
+
+Reuse an existing tuned suite without regenerating it:
+
+```bash
+python scripts/run_ml_pipeline.py --skip-suite
+```
+
+## Lower-Level Scripts
+
+If you want to run individual layers instead of the main ML workflow:
+
+Fetch and cache data only:
 
 ```bash
 python scripts/fetch_data.py
 ```
 
-Force a fresh download instead of using cache:
-
-```bash
-python scripts/fetch_data.py --force-refresh
-```
-
-Override the universe and date range:
-
-```bash
-python scripts/fetch_data.py \
-  --tickers SPY QQQ TLT GLD \
-  --start-date 2018-01-01 \
-  --end-date 2024-12-31 \
-  --force-refresh
-```
-
-## How To Run The Backtest
-
-Run the backtest only:
-
-```bash
-python scripts/run_backtest.py
-```
-
-Run the full pipeline:
-
-```bash
-python scripts/run_pipeline.py
-```
-
-Run the canonical objective suite. It uses the tuned `SPY,QQQ,GLD` subset and objective-specific overrides:
+Generate the tuned benchmark suite only:
 
 ```bash
 python scripts/run_tuned_suite.py
 ```
 
-Train the transformer actor-critic policy from the saved tuned-suite weights:
+Train the policy from existing benchmark outputs only:
 
 ```bash
 python scripts/train_rl_policy.py
 ```
 
-Override the optimizer objective or covariance estimator from the CLI:
+Run the broader classical benchmark pipeline only:
 
 ```bash
-python scripts/run_pipeline.py \
-  --objective mean_variance \
-  --covariance-estimator ewma
+python scripts/run_pipeline.py
+```
+
+Run the broader classical backtest only:
+
+```bash
+python scripts/run_backtest.py
 ```
 
 ## Configuration
 
-The default settings live in `config/default_config.yaml`.
+Default settings live in `config/default_config.yaml`.
 
-Key sections:
+Important sections:
 
 - `data`: ticker universe, asset-class map, cache behavior, date range
 - `preprocessing`: return type and annualization factor
@@ -267,83 +252,48 @@ Key sections:
 - `backtest`: lookback window, expanding vs rolling, rebalance frequency, benchmark
 - `reporting`: output locations and rolling volatility window
 
-Example changes:
-
-- replace the default ticker basket
-- tighten max weight bounds
-- add exposure caps such as `equity: 0.70`
-- switch from `min_variance` to `risk_parity`
-- switch from `ledoit_wolf` to `ewma`
-
-Tuned suite presets:
-
-- universe: `SPY, QQQ, GLD`
-- `mean_variance`: historical covariance, `lookback_days=252`, `risk_aversion=0.1`, `max_weight=1.0`
-- `risk_parity`: Ledoit-Wolf covariance, `lookback_days=252`, `max_weight=0.70`
-- `min_variance`: Ledoit-Wolf covariance, `lookback_days=252`, `max_weight=0.70`
-- `equal_weight`: `max_weight=1.0`
+The main ML workflow uses the tuned benchmark presets in [`src/quantshield/tuned_suite.py`](src/quantshield/tuned_suite.py). The base YAML config still controls the underlying data fetch, benchmark ticker, and shared preprocessing settings.
 
 ## Outputs
 
-Generated tables include:
+Primary ML artifacts are written to `outputs/rl_policy/`:
 
-- cleaned prices
-- daily returns
-- performance summary
-- comparison return streams
-- rebalance log
-- turnover
-- weight history
-- final weights
-- risk attribution
-- stress summary
-- covariance estimator comparison
-- text summary report
-
-Generated figures include:
-
-- price history
-- return correlation heatmap
-- cumulative return curves
-- rolling volatility
-- drawdown chart
-- portfolio weights over time
-- risk contribution chart
-- approximate efficient frontier
-
-The canonical suite writes one report bundle per objective under `outputs/tuned_objective_runs/` plus a top-level `tuned_objective_comparison.csv`.
-
-The RL policy trainer writes its artifacts under `outputs/rl_policy/`, including:
-
+- `actor_critic_policy.pt`
+- `rl_config.json`
 - `training_history.csv`
 - `evaluation_summary.csv`
 - `policy_predictions.csv`
 - `latest_policy_weights.csv`
-- `actor_critic_policy.pt`
-- `rl_config.json`
+- `ml_pipeline_summary.txt`
+
+Supporting benchmark artifacts are written to `outputs/tuned_objective_runs/`:
+
+- one report bundle per objective
+- `tuned_objective_comparison.csv`
+- per-objective `weights_history.csv`
+- per-objective `summary_report.txt`
+
+The repo also writes cleaned prices and returns under `data/processed/`.
 
 ## Example Console Output Shape
 
 ```text
-QuantShield Summary Report
-=========================
+QuantShield ML pipeline complete.
 
-Universe: SPY, QQQ, GLD
-Lookback window: 252 trading days
-Rebalance frequency: M
-Covariance estimator: historical
-Optimization objective: mean_variance
+Tuned benchmark suite:
+               tickers  annualized_return  benchmark_return  excess_return_vs_spy  ...
+Objective
+mean_variance  SPY,QQQ,GLD             0.1772            0.1320                0.0452  ...
+equal_weight   SPY,QQQ,GLD             0.1584            0.1320                0.0264  ...
+risk_parity    SPY,QQQ,GLD             0.1507            0.1320                0.0187  ...
+min_variance   SPY,QQQ,GLD             0.1360            0.1320                0.0040  ...
 
-Final weights:
-  GLD: 100.00%
-  SPY: 0.00%
-  QQQ: 0.00%
-
-Performance summary:
-             annualized_return  annualized_volatility  sharpe_ratio  ...
-portfolio               0.1772                 0.2052        0.8637  ...
-equal_weight            0.1584                 0.1452        1.0908  ...
-benchmark               0.1320                 0.1797        0.7343  ...
+Policy evaluation summary:
+            samples  demo_mean_excess_return  policy_mean_excess_return  ...
+Split
+train       34.0000                   0.0030                     -0.0002  ...
+validation   9.0000                   0.0040                      0.0079  ...
+all         43.0000                   0.0032                      0.0014  ...
 ```
 
 ## Testing
@@ -356,20 +306,17 @@ python -m pytest
 
 ## Notes And Assumptions
 
-- The project avoids lookahead bias by training only on data known at each rebalance date.
-- Ledoit-Wolf is used as the recommended default because it is usually more stable than the raw sample covariance in small or noisy samples.
-- Exposure caps are optional and only applied when asset metadata is available.
-- The correlation spike scenario is a volatility stress rather than a direct directional return shock.
-- The canonical objective suite is backtest-tuned on the same historical sample, so its outperformance versus SPY is exploratory rather than out-of-sample evidence.
-- The transformer actor-critic module is also trained on historical tuned-suite outputs, so it should be treated as an experimental offline RL component rather than a production signal.
+- The classical benchmark suite is backtest-tuned on the same historical sample, so its outperformance versus `SPY` is exploratory rather than out-of-sample evidence.
+- The transformer actor-critic is trained offline from those benchmark outputs, so it should be treated as a research model rather than a production trading signal.
+- The project avoids lookahead bias in the benchmark layer by training only on data known at each rebalance date.
+- Ledoit-Wolf remains the recommended default covariance estimator for the classical benchmark layer.
+- The ML model depends on PyTorch, while the rest of the classical stack does not.
 
 ## Future Extensions
 
-The codebase is structured so the following can be added cleanly:
-
-- transaction cost model
-- Black-Litterman overlay
-- factor model decomposition
-- regime detection
-- bootstrap confidence intervals
-- richer CLI options
+- transaction cost model inside the policy reward
+- regime-aware training splits
+- richer offline RL objectives
+- factor overlays and factor-aware state features
+- out-of-sample hyperparameter tuning split
+- probabilistic confidence bands for policy evaluation

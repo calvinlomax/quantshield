@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quantshield"
 version = "0.1.0"
-description = "Constraint-aware portfolio risk and allocation engine built around locally fetched yfinance data."
+description = "Transformer actor-critic portfolio policy project built on locally fetched yfinance data and constrained benchmark demonstrations."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

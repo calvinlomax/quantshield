@@ -1,4 +1,4 @@
-"""Run the rolling backtest and save core outputs."""
+"""Run the classical rolling backtest and save benchmark outputs."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from quantshield.utils import ensure_directory, save_frame
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the QuantShield rolling backtest.")
+    parser = argparse.ArgumentParser(description="Run the QuantShield classical rolling backtest.")
     parser.add_argument("--config", default="config/default_config.yaml", help="Path to YAML configuration file.")
     parser.add_argument("--force-refresh", action="store_true", help="Refetch data even if cached data exists.")
     return parser.parse_args()

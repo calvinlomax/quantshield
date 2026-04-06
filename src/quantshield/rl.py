@@ -1,4 +1,4 @@
-"""Offline transformer actor-critic training on saved portfolio weight demonstrations."""
+"""Core transformer actor-critic policy training on saved portfolio weight demonstrations."""
 
 from __future__ import annotations
 
