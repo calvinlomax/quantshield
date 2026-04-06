@@ -1,4 +1,4 @@
-Date,train_start,train_end,sample_size,objective,success,message,expected_return,expected_volatility,turnover,constraint_violations
+RebalanceDate,train_start,train_end,sample_size,objective,success,message,expected_return,expected_volatility,turnover,constraint_violations
 2015-07-31,2015-01-05,2015-07-31,145,equal_weight,True,Constructed bounded equal-weight benchmark.,0.031412796587684796,0.09208733760364804,0.0,
 2015-08-31,2015-01-05,2015-08-31,166,equal_weight,True,Constructed bounded equal-weight benchmark.,-0.017764761657567206,0.10716227372264638,0.0,
 2015-09-30,2015-01-05,2015-09-30,187,equal_weight,True,Constructed bounded equal-weight benchmark.,-0.043183454547136575,0.11464786515221352,0.0,

@@ -115,4 +115,6 @@ def performance_summary(
             "max_drawdown": max_drawdown(series),
             "calmar_ratio": calmar_ratio(series, periods_per_year=periods_per_year),
         }
-    return pd.DataFrame.from_dict(rows, orient="index")
+    summary = pd.DataFrame.from_dict(rows, orient="index")
+    summary.index.name = "Portfolio"
+    return summary

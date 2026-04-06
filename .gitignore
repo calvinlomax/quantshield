@@ -16,3 +16,5 @@ data/processed/*.csv
 outputs/figures/*.png
 outputs/tables/*.csv
 outputs/tables/*.txt
+outputs/tuned_objective_runs/**
+outputs/rl_policy/**

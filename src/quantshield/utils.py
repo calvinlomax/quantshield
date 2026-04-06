@@ -28,6 +28,7 @@ def normalize_datetime_index(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | 
         result.index = result.index.tz_localize(None)
     result = result.sort_index()
     result = result.loc[~result.index.duplicated(keep="last")]
+    result.index = pd.DatetimeIndex(result.index.values, name=result.index.name)
     return result
 
 
@@ -56,14 +57,23 @@ def infer_periods_per_year(index: pd.DatetimeIndex | None = None, default: int =
     return default
 
 
-def save_frame(frame: pd.DataFrame | pd.Series, path: str | Path, index_label: str = "Date") -> Path:
-    """Save a DataFrame or Series to CSV."""
+def save_frame(frame: pd.DataFrame | pd.Series, path: str | Path, index_label: str | None = None) -> Path:
+    """Save a DataFrame or Series to CSV with a sensible index label."""
     destination = Path(path)
     ensure_directory(destination.parent)
+    effective_index_label = index_label
+    if effective_index_label is None:
+        if getattr(frame.index, "name", None):
+            effective_index_label = str(frame.index.name)
+        elif isinstance(frame.index, pd.DatetimeIndex):
+            effective_index_label = "Date"
+        else:
+            effective_index_label = "Index"
+
     if isinstance(frame, pd.Series):
-        frame.to_frame(name=frame.name or "value").to_csv(destination, index_label=index_label)
+        frame.to_frame(name=frame.name or "value").to_csv(destination, index_label=effective_index_label)
     else:
-        frame.to_csv(destination, index_label=index_label)
+        frame.to_csv(destination, index_label=effective_index_label)
     return destination
 
 

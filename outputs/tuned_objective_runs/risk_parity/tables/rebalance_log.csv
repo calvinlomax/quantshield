@@ -1,4 +1,4 @@
-Date,train_start,train_end,sample_size,objective,success,message,expected_return,expected_volatility,turnover,constraint_violations
+RebalanceDate,train_start,train_end,sample_size,objective,success,message,expected_return,expected_volatility,turnover,constraint_violations
 2015-07-31,2015-01-05,2015-07-31,145,risk_parity,True,Optimization terminated successfully,0.014872157075851038,0.08976432840741808,0.0,
 2015-08-31,2015-01-05,2015-08-31,166,risk_parity,True,Optimization terminated successfully,-0.0262010999668512,0.09928935597051057,0.0506238500525579,
 2015-09-30,2015-01-05,2015-09-30,187,risk_parity,True,Optimization terminated successfully,-0.05094098529744094,0.10421314525513937,0.016005054404966634,

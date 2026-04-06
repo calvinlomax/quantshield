@@ -16,6 +16,7 @@ Final weights:
 
 Performance summary:
               annualized_return  annualized_volatility  sharpe_ratio  sortino_ratio  max_drawdown  calmar_ratio
+Portfolio                                                                                                      
 portfolio                0.1584                 0.1452        1.0908         1.3805       -0.2297        0.6897
 equal_weight             0.1584                 0.1452        1.0908         1.3805       -0.2297        0.6897
 benchmark                0.1320                 0.1797        0.7343         0.8917       -0.3372        0.3914
@@ -25,13 +26,15 @@ Herfindahl index: 0.3333
 Top weight share: 0.3333
 
 Risk attribution summary:
-     weight  component_risk  percentage_risk
-QQQ  0.3333          0.0598           0.3627
-GLD  0.3333          0.0538           0.3262
-SPY  0.3333          0.0513           0.3111
+        weight  component_risk  percentage_risk
+Ticker                                         
+QQQ     0.3333          0.0598           0.3627
+GLD     0.3333          0.0538           0.3262
+SPY     0.3333          0.0513           0.3111
 
 Stress test summary:
                            stressed_return  stressed_volatility largest_loss_contributor  largest_loss_contribution                                                                           notes
+Scenario                                                                                                                                                                                           
 equity_market_shock                -0.1333                  NaN                      SPY                    -0.0667                                     Custom return shock applied asset by asset.
 interest_rate_shock_proxy           0.0000                  NaN                      SPY                     0.0000                                     Custom return shock applied asset by asset.
 correlation_spike                      NaN               0.2654                      GLD                     0.1034  Returns are unchanged in this scenario; only portfolio volatility is stressed.

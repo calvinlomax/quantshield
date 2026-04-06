@@ -1,4 +1,4 @@
-Date,stressed_return,stressed_volatility,largest_loss_contributor,largest_loss_contribution,notes
+Scenario,stressed_return,stressed_volatility,largest_loss_contributor,largest_loss_contribution,notes
 equity_market_shock,-0.13299783386792602,,SPY,-0.09646522107588547,Custom return shock applied asset by asset.
 interest_rate_shock_proxy,0.0,,SPY,0.0,Custom return shock applied asset by asset.
 correlation_spike,,0.2620760374584058,SPY,0.11317558065077887,Returns are unchanged in this scenario; only portfolio volatility is stressed.

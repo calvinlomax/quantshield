@@ -116,6 +116,7 @@ def compare_covariance_estimators(
             for name, matrix in estimators.items()
         }
     ).T
+    summary.index.name = "CovarianceEstimator"
     return estimators, summary
 
 

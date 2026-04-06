@@ -136,4 +136,6 @@ def stress_results_table(results: dict[str, StressScenarioResult]) -> pd.DataFra
             "largest_loss_contribution": top_value,
             "notes": result.notes,
         }
-    return pd.DataFrame.from_dict(rows, orient="index")
+    table = pd.DataFrame.from_dict(rows, orient="index")
+    table.index.name = "Scenario"
+    return table

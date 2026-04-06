@@ -33,6 +33,7 @@ QuantShield provides a stable baseline for portfolio research without relying on
 QuantShield/
   README.md
   requirements.txt
+  requirements-rl.txt
   pyproject.toml
   config/
     default_config.yaml
@@ -54,6 +55,7 @@ QuantShield/
       pipeline.py
       plotting.py
       preprocessing.py
+      rl.py
       reporting.py
       risk.py
       stress_test.py
@@ -63,6 +65,7 @@ QuantShield/
     run_backtest.py
     run_pipeline.py
     run_tuned_suite.py
+    train_rl_policy.py
   notebooks/
     exploratory_analysis.ipynb
     portfolio_demo.ipynb
@@ -71,6 +74,7 @@ QuantShield/
     test_data_loader.py
     test_metrics.py
     test_optimization.py
+    test_rl.py
     test_risk.py
 ```
 
@@ -152,6 +156,18 @@ Implemented scenarios:
 - single-asset crash
 - user-defined custom shock vector
 
+### Transformer Actor-Critic Policy
+
+An optional RL extension is included for policy learning from the saved tuned-suite weights.
+
+- offline dataset source: saved `weights_history.csv` files from the tuned suite
+- state representation: trailing cross-asset return window with raw returns, z-scored returns, and cumulative-return features
+- architecture: transformer-style cross-asset attention encoder over asset tokens
+- actor head: continuous-action Dirichlet policy on the portfolio simplex
+- critic head: action-conditioned value head for offline actor-critic training
+- reward target: next-period excess return versus `SPY`
+- usage: experimental policy-learning layer on top of the classical optimizer suite
+
 ## Installation
 
 Python 3.11+ is required.
@@ -162,10 +178,22 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Optional RL dependencies:
+
+```bash
+pip install -r requirements-rl.txt
+```
+
 Optional editable install:
 
 ```bash
 pip install -e .
+```
+
+Editable install with RL extras:
+
+```bash
+pip install -e .[rl]
 ```
 
 ## How To Fetch Data Locally Using yfinance
@@ -210,6 +238,12 @@ Run the canonical objective suite. It uses the tuned `SPY,QQQ,GLD` subset and ob
 
 ```bash
 python scripts/run_tuned_suite.py
+```
+
+Train the transformer actor-critic policy from the saved tuned-suite weights:
+
+```bash
+python scripts/train_rl_policy.py
 ```
 
 Override the optimizer objective or covariance estimator from the CLI:
@@ -279,6 +313,15 @@ Generated figures include:
 
 The canonical suite writes one report bundle per objective under `outputs/tuned_objective_runs/` plus a top-level `tuned_objective_comparison.csv`.
 
+The RL policy trainer writes its artifacts under `outputs/rl_policy/`, including:
+
+- `training_history.csv`
+- `evaluation_summary.csv`
+- `policy_predictions.csv`
+- `latest_policy_weights.csv`
+- `actor_critic_policy.pt`
+- `rl_config.json`
+
 ## Example Console Output Shape
 
 ```text
@@ -318,6 +361,7 @@ python -m pytest
 - Exposure caps are optional and only applied when asset metadata is available.
 - The correlation spike scenario is a volatility stress rather than a direct directional return shock.
 - The canonical objective suite is backtest-tuned on the same historical sample, so its outperformance versus SPY is exploratory rather than out-of-sample evidence.
+- The transformer actor-critic module is also trained on historical tuned-suite outputs, so it should be treated as an experimental offline RL component rather than a production signal.
 
 ## Future Extensions
 

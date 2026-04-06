@@ -60,6 +60,7 @@ def extract_adjusted_close(data: pd.DataFrame, tickers: list[str]) -> pd.DataFra
     if ordered_columns:
         prices = prices.loc[:, ordered_columns]
     prices = normalize_datetime_index(prices)
+    prices.index.name = "Date"
     return prices
 
 
@@ -82,7 +83,9 @@ class MarketDataLoader:
         if not cache_path.exists():
             raise FileNotFoundError(f"Cached price file does not exist: {cache_path}")
         prices = pd.read_csv(cache_path, index_col=0, parse_dates=True)
-        return normalize_datetime_index(prices)
+        prices = normalize_datetime_index(prices)
+        prices.index.name = "Date"
+        return prices
 
     def fetch_prices(
         self,
@@ -115,5 +118,6 @@ class MarketDataLoader:
         if prices.empty:
             raise ValueError("No price data was returned after extraction.")
 
+        prices.index.name = "Date"
         prices.to_csv(cache_path, index_label="Date")
         return prices

@@ -1,4 +1,4 @@
-Date,train_start,train_end,sample_size,objective,success,message,expected_return,expected_volatility,turnover,constraint_violations
+RebalanceDate,train_start,train_end,sample_size,objective,success,message,expected_return,expected_volatility,turnover,constraint_violations
 2015-07-31,2015-01-05,2015-07-31,145,min_variance,True,Optimization terminated successfully,-0.011182932954986145,0.08832360915636035,0.0,
 2015-08-31,2015-01-05,2015-08-31,166,min_variance,True,Optimization terminated successfully,-0.04058674199607716,0.09670733639310296,0.0924809972656506,
 2015-09-30,2015-01-05,2015-09-30,187,min_variance,True,Optimization terminated successfully,-0.06700646581909432,0.10056484215781074,0.04694440337929669,

@@ -138,11 +138,13 @@ def run_rolling_backtest(
 
     comparison_returns = pd.concat(comparison_segments).sort_index()
     comparison_returns = comparison_returns.loc[~comparison_returns.index.duplicated(keep="last")]
+    comparison_returns.index.name = "Date"
     weights_history = pd.DataFrame(weights_records)
-    weights_history.index.name = "rebalance_date"
+    weights_history.index.name = "RebalanceDate"
     turnover = pd.concat(turnover_records, axis=1).T["turnover"]
-    turnover.index.name = "rebalance_date"
+    turnover.index.name = "RebalanceDate"
     rebalance_log = pd.DataFrame(log_records).set_index("rebalance_date")
+    rebalance_log.index.name = "RebalanceDate"
 
     summary = performance_summary(
         comparison_returns,

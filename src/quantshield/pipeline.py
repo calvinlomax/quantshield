@@ -128,18 +128,30 @@ def save_pipeline_artifacts(result: PipelineResult, config: AppConfig) -> dict[s
     figures_dir = ensure_directory(config.reporting.figures_dir)
     tables_dir = ensure_directory(config.reporting.tables_dir)
 
+    clean_prices = result.prices.rename_axis("Date")
+    returns = result.returns.rename_axis("Date")
+    performance_summary = result.backtest_result.performance_summary.rename_axis("Portfolio")
+    comparison_returns = result.backtest_result.comparison_returns.rename_axis("Date")
+    weights_history = result.backtest_result.weights_history.rename_axis("RebalanceDate")
+    turnover = result.backtest_result.turnover.rename_axis("RebalanceDate").rename("turnover")
+    rebalance_log = result.backtest_result.rebalance_log.rename_axis("RebalanceDate")
+    final_weights = result.backtest_result.latest_weights.rename_axis("Ticker").rename("weight")
+    risk_attribution = result.risk_attribution.rename_axis("Ticker")
+    stress_summary = result.stress_summary.rename_axis("Scenario")
+    covariance_summary = result.covariance_summary.rename_axis("CovarianceEstimator")
+
     paths = {
-        "clean_prices": save_frame(result.prices, processed_dir / "clean_prices.csv"),
-        "returns": save_frame(result.returns, processed_dir / "daily_returns.csv"),
-        "performance_summary": save_frame(result.backtest_result.performance_summary, tables_dir / "performance_summary.csv"),
-        "comparison_returns": save_frame(result.backtest_result.comparison_returns, tables_dir / "comparison_returns.csv"),
-        "weights_history": save_frame(result.backtest_result.weights_history, tables_dir / "weights_history.csv"),
-        "turnover": save_frame(result.backtest_result.turnover, tables_dir / "turnover.csv"),
-        "rebalance_log": save_frame(result.backtest_result.rebalance_log, tables_dir / "rebalance_log.csv"),
-        "final_weights": save_frame(result.backtest_result.latest_weights, tables_dir / "final_weights.csv"),
-        "risk_attribution": save_frame(result.risk_attribution, tables_dir / "risk_attribution.csv"),
-        "stress_summary": save_frame(result.stress_summary, tables_dir / "stress_summary.csv"),
-        "covariance_summary": save_frame(result.covariance_summary, tables_dir / "covariance_summary.csv"),
+        "clean_prices": save_frame(clean_prices, processed_dir / "clean_prices.csv"),
+        "returns": save_frame(returns, processed_dir / "daily_returns.csv"),
+        "performance_summary": save_frame(performance_summary, tables_dir / "performance_summary.csv"),
+        "comparison_returns": save_frame(comparison_returns, tables_dir / "comparison_returns.csv"),
+        "weights_history": save_frame(weights_history, tables_dir / "weights_history.csv"),
+        "turnover": save_frame(turnover, tables_dir / "turnover.csv"),
+        "rebalance_log": save_frame(rebalance_log, tables_dir / "rebalance_log.csv"),
+        "final_weights": save_frame(final_weights, tables_dir / "final_weights.csv"),
+        "risk_attribution": save_frame(risk_attribution, tables_dir / "risk_attribution.csv"),
+        "stress_summary": save_frame(stress_summary, tables_dir / "stress_summary.csv"),
+        "covariance_summary": save_frame(covariance_summary, tables_dir / "covariance_summary.csv"),
         "summary_text": write_summary_text(result.summary_text, tables_dir / "summary_report.txt"),
         "price_history_fig": plot_price_history(result.prices, figures_dir / "price_history.png"),
         "correlation_heatmap_fig": plot_correlation_heatmap(result.returns, figures_dir / "correlation_heatmap.png"),

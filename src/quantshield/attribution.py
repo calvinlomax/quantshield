@@ -60,4 +60,6 @@ def risk_attribution_table(weights: pd.Series, covariance: pd.DataFrame) -> pd.D
         ],
         axis=1,
     )
-    return table.sort_values("component_risk", ascending=False)
+    table = table.sort_values("component_risk", ascending=False)
+    table.index.name = "Ticker"
+    return table
