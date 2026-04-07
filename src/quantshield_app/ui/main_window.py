@@ -17,10 +17,12 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSplitter,
@@ -31,10 +33,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE
 from quantshield.utils import format_percent
-from quantshield_app.services import CheckpointDescriptor, CheckpointService, MarketDataService, ReplayService, parse_ticker_input
+from quantshield_app.services import CheckpointDescriptor, CheckpointService, MarketDataService, ReplayService, TickerSearchService
 from quantshield_app.services.replay_service import PolicyReplayResult
-from quantshield_app.ui.charts import AllocationHistoryCanvas, CurrentAllocationCanvas, EquityCurveCanvas
+from quantshield_app.ui.charts import AllocationHistoryCanvas, CurrentAllocationCanvas, EquityCurveCanvas, TimestampHeatmapCanvas
+from quantshield_app.ui.ticker_search_dialog import TickerSearchDialog
 from quantshield_app.viewmodels import ReplayController
 
 
@@ -130,12 +134,14 @@ class QuantShieldMainWindow(QMainWindow):
         self.checkpoint_service = checkpoint_service or CheckpointService()
         self.market_data_service = market_data_service or MarketDataService()
         self.replay_service = replay_service or ReplayService()
+        self.ticker_search_service = TickerSearchService()
         self.controller = ReplayController()
         self.replay_result: PolicyReplayResult | None = None
         self._current_descriptor: CheckpointDescriptor | None = None
         self._worker_thread: QThread | None = None
         self._worker: ReplayPreparationWorker | None = None
         self._slider_is_syncing = False
+        self._splitter_initialized = False
 
         self.playback_timer = QTimer(self)
         self.playback_timer.timeout.connect(self._advance_playback)
@@ -151,6 +157,13 @@ class QuantShieldMainWindow(QMainWindow):
             self._worker_thread.wait(1000)
         super().closeEvent(event)
 
+    def showEvent(self, event: Any) -> None:  # pragma: no cover - layout polish
+        super().showEvent(event)
+        if not self._splitter_initialized:
+            total_width = max(self.width(), 1200)
+            self.main_splitter.setSizes([int(total_width * 0.4), int(total_width * 0.6)])
+            self._splitter_initialized = True
+
     def _build_ui(self) -> None:
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -159,26 +172,53 @@ class QuantShieldMainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
 
         outer_layout = QHBoxLayout(root)
-        splitter = QSplitter(Qt.Orientation.Horizontal, root)
-        outer_layout.addWidget(splitter)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal, root)
+        outer_layout.addWidget(self.main_splitter)
 
-        controls_panel = QWidget(splitter)
-        controls_panel.setMinimumWidth(410)
+        controls_scroll = QScrollArea(self.main_splitter)
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setMinimumWidth(410)
+        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        controls_panel = QWidget(controls_scroll)
         controls_layout = QVBoxLayout(controls_panel)
         controls_layout.setContentsMargins(12, 12, 12, 12)
-        controls_layout.setSpacing(12)
+        controls_layout.setSpacing(10)
 
         controls_layout.addWidget(self._build_run_group())
         controls_layout.addWidget(self._build_playback_group())
-        controls_layout.addWidget(self._build_current_state_group())
-        controls_layout.addWidget(self._build_summary_group())
+        metrics_row = QWidget(controls_panel)
+        metrics_row_layout = QHBoxLayout(metrics_row)
+        metrics_row_layout.setContentsMargins(0, 0, 0, 0)
+        metrics_row_layout.setSpacing(10)
+        metrics_row_layout.addWidget(self._build_current_state_group(), stretch=1)
+        metrics_row_layout.addWidget(self._build_summary_group(), stretch=1)
+        controls_layout.addWidget(metrics_row)
         controls_layout.addWidget(self._build_weights_group())
         controls_layout.addStretch(1)
+        controls_scroll.setWidget(controls_panel)
 
-        charts_panel = QWidget(splitter)
+        charts_panel = QWidget(self.main_splitter)
         charts_layout = QVBoxLayout(charts_panel)
         charts_layout.setContentsMargins(12, 12, 12, 12)
         charts_layout.setSpacing(10)
+
+        self.equity_canvas = EquityCurveCanvas()
+        self.allocation_history_canvas = AllocationHistoryCanvas()
+        self.current_allocation_canvas = CurrentAllocationCanvas()
+        self.timestamp_heatmap_canvas = TimestampHeatmapCanvas()
+
+        charts_layout.addWidget(self.equity_canvas, stretch=5)
+        charts_layout.addWidget(self.allocation_history_canvas, stretch=4)
+
+        bottom_charts = QWidget(charts_panel)
+        bottom_layout = QHBoxLayout(bottom_charts)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(10)
+        bottom_layout.addWidget(self.current_allocation_canvas, stretch=1)
+        bottom_layout.addWidget(self.timestamp_heatmap_canvas, stretch=1)
+        charts_layout.addWidget(bottom_charts, stretch=3)
 
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal, charts_panel)
         self.timeline_slider.setRange(0, 0)
@@ -189,18 +229,10 @@ class QuantShieldMainWindow(QMainWindow):
         self.timeline_label = QLabel("Replay position: 0 / 0")
         charts_layout.addWidget(self.timeline_label)
 
-        self.equity_canvas = EquityCurveCanvas()
-        self.allocation_history_canvas = AllocationHistoryCanvas()
-        self.current_allocation_canvas = CurrentAllocationCanvas()
-
-        charts_layout.addWidget(self.equity_canvas, stretch=5)
-        charts_layout.addWidget(self.allocation_history_canvas, stretch=4)
-        charts_layout.addWidget(self.current_allocation_canvas, stretch=3)
-
-        splitter.addWidget(controls_panel)
-        splitter.addWidget(charts_panel)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
+        self.main_splitter.addWidget(controls_scroll)
+        self.main_splitter.addWidget(charts_panel)
+        self.main_splitter.setStretchFactor(0, 2)
+        self.main_splitter.setStretchFactor(1, 3)
 
     def _build_run_group(self) -> QGroupBox:
         group = QGroupBox("Replay Inputs")
@@ -210,8 +242,30 @@ class QuantShieldMainWindow(QMainWindow):
         self.checkpoint_combo = QComboBox(group)
         self.checkpoint_combo.currentIndexChanged.connect(self._on_checkpoint_changed)
 
-        self.ticker_input = QLineEdit(group)
-        self.ticker_input.setPlaceholderText("SPY,QQQ,GLD")
+        ticker_panel = QWidget(group)
+        ticker_panel_layout = QVBoxLayout(ticker_panel)
+        ticker_panel_layout.setContentsMargins(0, 0, 0, 0)
+        ticker_panel_layout.setSpacing(8)
+
+        self.selected_tickers_list = QListWidget(ticker_panel)
+        self.selected_tickers_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        ticker_panel_layout.addWidget(self.selected_tickers_list)
+
+        ticker_button_row = QHBoxLayout()
+        self.add_ticker_button = QPushButton("Add Ticker", ticker_panel)
+        self.remove_ticker_button = QPushButton("Remove Selected", ticker_panel)
+        self.reset_tickers_button = QPushButton("Reset To Model Universe", ticker_panel)
+        self.add_ticker_button.clicked.connect(self._open_ticker_search)
+        self.remove_ticker_button.clicked.connect(self._remove_selected_tickers)
+        self.reset_tickers_button.clicked.connect(self._reset_to_model_universe)
+        ticker_button_row.addWidget(self.add_ticker_button)
+        ticker_button_row.addWidget(self.remove_ticker_button)
+        ticker_button_row.addWidget(self.reset_tickers_button)
+        ticker_panel_layout.addLayout(ticker_button_row)
+
+        self.ticker_help_label = QLabel("Select at least 5 tickers. The model was trained on the top 10 ETF universe but can infer on arbitrary yfinance baskets.")
+        self.ticker_help_label.setWordWrap(True)
+        ticker_panel_layout.addWidget(self.ticker_help_label)
 
         self.start_date_edit = QDateEdit(DEFAULT_START_DATE, group)
         self.start_date_edit.setCalendarPopup(True)
@@ -227,7 +281,7 @@ class QuantShieldMainWindow(QMainWindow):
 
         self.benchmark_combo = QComboBox(group)
         self.benchmark_combo.setEditable(True)
-        self.benchmark_combo.addItems(["SPY", "QQQ", "GLD"])
+        self.benchmark_combo.addItems(list(CANONICAL_TOP_ETF_UNIVERSE))
         self.benchmark_combo.setCurrentText("SPY")
 
         self.capital_input = QDoubleSpinBox(group)
@@ -241,7 +295,7 @@ class QuantShieldMainWindow(QMainWindow):
         self.run_button.clicked.connect(self._start_replay_preparation)
 
         layout.addRow("Checkpoint", self.checkpoint_combo)
-        layout.addRow("Tickers", self.ticker_input)
+        layout.addRow("Portfolio Tickers", ticker_panel)
         layout.addRow("Start Date", self.start_date_edit)
         layout.addRow("End Date", self.end_date_edit)
         layout.addRow("Rebalance", self.rebalance_combo)
@@ -335,7 +389,8 @@ class QuantShieldMainWindow(QMainWindow):
         self.weights_table.verticalHeader().setVisible(False)
         self.weights_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.weights_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self.weights_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.weights_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.weights_table.setMaximumHeight(260)
 
         layout.addWidget(self.weights_table)
         return group
@@ -369,7 +424,8 @@ class QuantShieldMainWindow(QMainWindow):
 
     def _apply_descriptor(self, descriptor: CheckpointDescriptor) -> None:
         self._current_descriptor = descriptor
-        self.ticker_input.setText(",".join(descriptor.tickers))
+        default_tickers = descriptor.tickers if len(descriptor.tickers) >= 5 else list(CANONICAL_TOP_ETF_UNIVERSE)
+        self._set_selected_tickers(default_tickers)
 
         benchmark_options = [descriptor.tickers[0], *[ticker for ticker in descriptor.tickers[1:] if ticker != descriptor.tickers[0]]]
         if "SPY" not in benchmark_options:
@@ -379,6 +435,35 @@ class QuantShieldMainWindow(QMainWindow):
         self.benchmark_combo.addItems(benchmark_options)
         self.benchmark_combo.setCurrentText("SPY" if "SPY" in benchmark_options else benchmark_options[0])
         self.benchmark_combo.blockSignals(False)
+
+    def _set_selected_tickers(self, tickers: list[str]) -> None:
+        self.selected_tickers_list.clear()
+        for ticker in tickers:
+            self.selected_tickers_list.addItem(QListWidgetItem(str(ticker).upper()))
+
+    def _selected_tickers(self) -> list[str]:
+        return [self.selected_tickers_list.item(index).text().strip().upper() for index in range(self.selected_tickers_list.count())]
+
+    def _open_ticker_search(self) -> None:
+        dialog = TickerSearchDialog(
+            search_service=self.ticker_search_service,
+            selected_tickers=self._selected_tickers(),
+            parent=self,
+        )
+        if dialog.exec():
+            self._set_selected_tickers(dialog.selected_tickers)
+            self.status_bar.showMessage("Updated selected portfolio tickers.")
+
+    def _remove_selected_tickers(self) -> None:
+        for item in self.selected_tickers_list.selectedItems():
+            row = self.selected_tickers_list.row(item)
+            self.selected_tickers_list.takeItem(row)
+
+    def _reset_to_model_universe(self) -> None:
+        if self._current_descriptor is None:
+            return
+        self._set_selected_tickers(self._current_descriptor.tickers)
+        self.status_bar.showMessage("Reset portfolio tickers to the checkpoint training universe.")
 
     def _set_playback_enabled(self, enabled: bool) -> None:
         for widget in [
@@ -397,10 +482,9 @@ class QuantShieldMainWindow(QMainWindow):
             self._show_error("No saved model checkpoint is available. Train the policy first.")
             return
 
-        try:
-            tickers = parse_ticker_input(self.ticker_input.text())
-        except ValueError as exc:
-            self._show_error(str(exc))
+        tickers = self._selected_tickers()
+        if len(tickers) < 5:
+            self._show_error("Select at least 5 tickers before running a replay.")
             return
 
         benchmark_ticker = self.benchmark_combo.currentText().strip().upper()
@@ -466,6 +550,7 @@ class QuantShieldMainWindow(QMainWindow):
         self.equity_canvas.set_result(replay_result)
         self.allocation_history_canvas.set_result(replay_result)
         self.current_allocation_canvas.set_result(replay_result)
+        self.timestamp_heatmap_canvas.set_result(replay_result)
         self._update_summary_metrics(replay_result)
         self._render_current_frame(self.controller.current_frame())
         self.status_bar.showMessage("Replay prepared. Playback started automatically.")
@@ -554,6 +639,7 @@ class QuantShieldMainWindow(QMainWindow):
         self.equity_canvas.update_frame(frame.index)
         self.allocation_history_canvas.update_frame(frame.index)
         self.current_allocation_canvas.update_frame(frame)
+        self.timestamp_heatmap_canvas.update_frame(frame.index)
 
     def _update_summary_metrics(self, replay_result: PolicyReplayResult) -> None:
         metrics = replay_result.metrics
@@ -571,4 +657,3 @@ class QuantShieldMainWindow(QMainWindow):
         for row_index, (ticker, value) in enumerate(ordered.items()):
             self.weights_table.setItem(row_index, 0, QTableWidgetItem(str(ticker)))
             self.weights_table.setItem(row_index, 1, QTableWidgetItem(format_percent(float(value))))
-

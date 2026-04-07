@@ -54,6 +54,7 @@ class PolicyReplayResult:
     cumulative_values: pd.DataFrame
     weights_history: pd.DataFrame
     daily_weights: pd.DataFrame
+    asset_returns: pd.DataFrame
     summary_table: pd.DataFrame
     metrics: dict[str, float]
     requested_tickers: list[str]
@@ -76,9 +77,10 @@ class ReplayService:
         if starting_capital <= 0.0:
             raise ValueError("Starting capital must be positive.")
 
-        portfolio_tickers = self._resolve_ticker_order(market_data.portfolio_tickers, checkpoint.tickers)
+        portfolio_tickers = self._validate_portfolio_tickers(market_data.portfolio_tickers)
         benchmark = market_data.benchmark_ticker
         replay_returns = market_data.replay_returns
+        asset_returns = replay_returns.loc[:, portfolio_tickers].copy()
         rebalance_dates = get_rebalance_dates(replay_returns.index, frequency=rebalance_frequency)
         rebalance_dates = pd.DatetimeIndex(
             [date for date in rebalance_dates if replay_returns.index.get_loc(date) < len(replay_returns.index) - 1]
@@ -99,7 +101,7 @@ class ReplayService:
             if len(window) < checkpoint.training_config.lookback_window:
                 continue
 
-            weights = predict_policy_weights(checkpoint, window)
+            weights = predict_policy_weights(checkpoint, window, tickers=portfolio_tickers)
             turnover = 0.0 if previous_weights is None else float(np.abs(weights - previous_weights).sum())
             rebalance_weight_records.append(weights.rename(rebalance_date))
 
@@ -183,6 +185,7 @@ class ReplayService:
             cumulative_values=cumulative_values,
             weights_history=weights_history,
             daily_weights=daily_weights,
+            asset_returns=asset_returns,
             summary_table=summary,
             metrics=metrics,
             requested_tickers=list(market_data.portfolio_tickers),
@@ -191,15 +194,9 @@ class ReplayService:
         )
 
     @staticmethod
-    def _resolve_ticker_order(requested_tickers: list[str], checkpoint_tickers: list[str]) -> list[str]:
-        """Align user-entered tickers to the checkpoint order and reject mismatches."""
-        requested_set = set(requested_tickers)
-        checkpoint_set = set(checkpoint_tickers)
-        if requested_set != checkpoint_set:
-            expected = ", ".join(checkpoint_tickers)
-            received = ", ".join(requested_tickers)
-            raise ValueError(
-                "Ticker/model mismatch. "
-                f"Selected checkpoint expects [{expected}] but the app received [{received}]."
-            )
-        return list(checkpoint_tickers)
+    def _validate_portfolio_tickers(requested_tickers: list[str], minimum_count: int = 5) -> list[str]:
+        """Validate the user-selected portfolio tickers for arbitrary-universe inference."""
+        normalized = [ticker.strip().upper() for ticker in requested_tickers if ticker.strip()]
+        if len(normalized) < minimum_count:
+            raise ValueError(f"Select at least {minimum_count} tickers for policy replay.")
+        return normalized

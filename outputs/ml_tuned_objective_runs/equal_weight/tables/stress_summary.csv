@@ -1,5 +1,5 @@
 Scenario,stressed_return,stressed_volatility,largest_loss_contributor,largest_loss_contribution,notes
-equity_market_shock,-0.13333333333333333,,SPY,-0.06666666666666667,Custom return shock applied asset by asset.
-interest_rate_shock_proxy,0.0,,SPY,0.0,Custom return shock applied asset by asset.
-correlation_spike,,0.26585180981762674,GLD,0.10379579334883801,Returns are unchanged in this scenario; only portfolio volatility is stressed.
-single_asset_crash,-0.09999999999999999,,SPY,-0.09999999999999999,Custom return shock applied asset by asset.
+equity_market_shock,-0.18000000000000005,,VOO,-0.020000000000000004,Custom return shock applied asset by asset.
+interest_rate_shock_proxy,0.0,,VOO,0.0,Custom return shock applied asset by asset.
+correlation_spike,,0.22350838072686313,GLD,0.029415887263565373,Returns are unchanged in this scenario; only portfolio volatility is stressed.
+single_asset_crash,-0.03,,VOO,-0.03,Custom return shock applied asset by asset.

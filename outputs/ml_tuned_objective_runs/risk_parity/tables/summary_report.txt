@@ -1,8 +1,8 @@
 QuantShield Summary Report
 =========================
 
-Universe: SPY, QQQ, GLD
-Sample window: 2015-01-02 to 2026-04-06
+Universe: VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV
+Sample window: 2015-01-02 to 2026-04-07
 Lookback window: 252 trading days
 Rebalance frequency: W-FRI
 Covariance estimator: ledoit_wolf
@@ -10,32 +10,41 @@ Optimization objective: risk_parity
 Latest constraint check: no violations reported
 
 Final weights:
-  SPY: 35.44%
-  GLD: 33.56%
-  QQQ: 31.00%
+  GLD: 14.49%
+  VTV: 12.38%
+  IEFA: 10.15%
+  VEA: 10.04%
+  VOO: 9.53%
+  IVV: 9.41%
+  SPY: 9.08%
+  VTI: 9.06%
+  VUG: 8.00%
+  QQQ: 7.86%
 
 Performance summary:
               annualized_return  annualized_volatility  sharpe_ratio  sortino_ratio  max_drawdown  calmar_ratio
 Portfolio                                                                                                      
-portfolio                0.1497                 0.1286        1.1642         1.4994       -0.2030        0.7375
-equal_weight             0.1572                 0.1449        1.0849         1.3742       -0.2297        0.6846
-benchmark                0.1327                 0.1794        0.7399         0.8987       -0.3372        0.3937
+portfolio                0.1291                 0.1462        0.8832         1.0812       -0.2799        0.4611
+equal_weight             0.1295                 0.1615        0.8020         0.9799       -0.3061        0.4232
+benchmark                0.1327                 0.1794        0.7400         0.8986       -0.3372        0.3936
 
-Average turnover: 0.0038
-Herfindahl index: 0.3343
-Top weight share: 0.3544
+Average turnover: 0.0020
+Herfindahl index: 0.1037
+Top weight share: 0.1449
 
 Risk attribution summary:
         weight  component_risk  percentage_risk
 Ticker                                         
-SPY     0.3544          0.0550           0.3333
-QQQ     0.3100          0.0550           0.3333
-GLD     0.3356          0.0550           0.3333
+GLD     0.1449          0.0154           0.1001
+IEFA    0.1015          0.0154           0.1000
+VEA     0.1004          0.0154           0.1000
+VUG     0.0800          0.0154           0.1000
+QQQ     0.0786          0.0154           0.1000
 
 Stress test summary:
                            stressed_return  stressed_volatility largest_loss_contributor  largest_loss_contribution                                                                           notes
 Scenario                                                                                                                                                                                           
-equity_market_shock                -0.1329                  NaN                      SPY                    -0.0709                                     Custom return shock applied asset by asset.
-interest_rate_shock_proxy           0.0000                  NaN                      SPY                     0.0000                                     Custom return shock applied asset by asset.
-correlation_spike                      NaN               0.2653                      GLD                     0.1046  Returns are unchanged in this scenario; only portfolio volatility is stressed.
-single_asset_crash                 -0.1063                  NaN                      SPY                    -0.1063                                     Custom return shock applied asset by asset.
+equity_market_shock                -0.1710                  NaN                      VTV                    -0.0248                                     Custom return shock applied asset by asset.
+interest_rate_shock_proxy           0.0000                  NaN                      VOO                     0.0000                                     Custom return shock applied asset by asset.
+correlation_spike                      NaN               0.2242                      GLD                     0.0436  Returns are unchanged in this scenario; only portfolio volatility is stressed.
+single_asset_crash                 -0.0435                  NaN                      GLD                    -0.0435                                     Custom return shock applied asset by asset.

@@ -1,24 +1,26 @@
 data:
   tickers:
+    - VOO
+    - IVV
     - SPY
+    - VTI
     - QQQ
-    - IWM
-    - EFA
-    - EEM
-    - TLT
-    - LQD
+    - VEA
+    - VUG
     - GLD
-    - VNQ
+    - IEFA
+    - VTV
   asset_class_map:
+    VOO: equity
+    IVV: equity
     SPY: equity
+    VTI: equity
     QQQ: equity
-    IWM: equity
-    EFA: equity
-    EEM: equity
-    TLT: bond
-    LQD: bond
+    VEA: equity
+    VUG: equity
     GLD: commodity
-    VNQ: real_estate
+    IEFA: equity
+    VTV: equity
   start_date: "2015-01-01"
   end_date: null
   cache_dir: "data/raw"
@@ -39,11 +41,11 @@ risk:
 
 optimization:
   objective: "min_variance"
-  risk_aversion: 3.0
+  risk_aversion: 1.0
   long_only: true
   min_weight: 0.0
-  max_weight: 0.35
-  turnover_penalty: 0.0025
+  max_weight: 0.2
+  turnover_penalty: 0.0015
   target_volatility: null
   fallback_to_equal_weight: true
   exposure_caps: {}

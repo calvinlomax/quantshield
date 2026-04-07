@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from quantshield.data_loader import MarketDataLoader
-from quantshield_app.services import CheckpointService, MarketDataService, parse_ticker_input
+from quantshield_app.services import CheckpointService, MarketDataService, TickerSearchService, parse_ticker_input
 from quantshield_app.services.replay_service import ReplayFrame, ReplayService
 from quantshield_app.viewmodels import ReplayController
 
@@ -74,6 +74,14 @@ def _sample_frames() -> list[ReplayFrame]:
 def test_parse_ticker_input_normalizes_and_dedupes() -> None:
     parsed = parse_ticker_input(" spy, qqq\nGLD , SPY ")
     assert parsed == ["SPY", "QQQ", "GLD"]
+
+
+def test_ticker_search_service_filters_seed_universe() -> None:
+    service = TickerSearchService(seed_tickers=["VOO", "IVV", "SPY", "GLD"])
+    suggestions = service.search("vo", limit=5)
+
+    assert suggestions
+    assert suggestions[0].symbol == "VOO"
 
 
 def test_prepare_market_data_requires_sufficient_lookback(tmp_path) -> None:
@@ -148,12 +156,12 @@ def test_checkpoint_service_discovers_and_loads_checkpoint(tmp_path) -> None:
     assert loaded.training_config.attention_layers == 1
 
 
-def test_replay_service_resolves_requested_ticker_order() -> None:
-    ordered = ReplayService._resolve_ticker_order(["GLD", "QQQ", "SPY"], ["SPY", "QQQ", "GLD"])
-    assert ordered == ["SPY", "QQQ", "GLD"]
+def test_replay_service_validates_minimum_ticker_count() -> None:
+    ordered = ReplayService._validate_portfolio_tickers(["GLD", "QQQ", "SPY", "VOO", "IVV"])
+    assert ordered == ["GLD", "QQQ", "SPY", "VOO", "IVV"]
 
-    with pytest.raises(ValueError, match="Ticker/model mismatch"):
-        ReplayService._resolve_ticker_order(["SPY", "QQQ"], ["SPY", "QQQ", "GLD"])
+    with pytest.raises(ValueError, match="Select at least 5 tickers"):
+        ReplayService._validate_portfolio_tickers(["SPY", "QQQ", "GLD", "IVV"])
 
 
 def test_replay_controller_step_and_scrub_logic() -> None:

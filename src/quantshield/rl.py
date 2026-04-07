@@ -277,10 +277,13 @@ class CrossAssetAttentionActorCritic(nn.Module):
 
     def encode(self, states: torch.Tensor) -> torch.Tensor:
         batch_size, num_assets, lookback, features = states.shape
-        if num_assets != self.num_assets:
-            raise ValueError(f"Expected {self.num_assets} assets but received {num_assets}.")
         flattened = states.reshape(batch_size, num_assets, lookback * features)
-        embeddings = self.input_projection(flattened) + self.asset_embedding[:, :num_assets, :]
+        if num_assets <= self.num_assets:
+            asset_embedding = self.asset_embedding[:, :num_assets, :]
+        else:
+            repeated_tail = self.asset_embedding[:, -1:, :].expand(1, num_assets - self.num_assets, -1)
+            asset_embedding = torch.cat([self.asset_embedding, repeated_tail], dim=1)
+        embeddings = self.input_projection(flattened) + asset_embedding
         return self.cross_asset_attention(embeddings)
 
     def policy_distribution(self, states: torch.Tensor) -> tuple[Dirichlet, torch.Tensor, torch.Tensor]:
@@ -378,11 +381,11 @@ def load_actor_critic_checkpoint(
 def build_policy_state(
     returns_window: pd.DataFrame,
     *,
-    tickers: Sequence[str],
+    tickers: Sequence[str] | None = None,
     lookback_window: int,
 ) -> np.ndarray:
     """Build a single policy state tensor from a trailing return window."""
-    ordered_window = returns_window.reindex(columns=list(tickers))
+    ordered_window = returns_window.reindex(columns=list(tickers)) if tickers is not None else returns_window.copy()
     if ordered_window.isna().any().any():
         raise ValueError("Return window contains missing values after ticker alignment.")
     if len(ordered_window) != lookback_window:
@@ -395,11 +398,14 @@ def build_policy_state(
 def predict_policy_weights(
     checkpoint: LoadedPolicyCheckpoint,
     returns_window: pd.DataFrame,
+    *,
+    tickers: Sequence[str] | None = None,
 ) -> pd.Series:
     """Predict deterministic portfolio weights from a trailing return window."""
+    output_tickers = list(tickers) if tickers is not None else list(returns_window.columns)
     state = build_policy_state(
         returns_window,
-        tickers=checkpoint.tickers,
+        tickers=output_tickers,
         lookback_window=checkpoint.training_config.lookback_window,
     )
     batch = torch.as_tensor(state[None, ...], dtype=torch.float32, device=checkpoint.device)
@@ -407,7 +413,7 @@ def predict_policy_weights(
     with torch.no_grad():
         _, policy_mean, _ = checkpoint.model.policy_distribution(batch)
     weights = policy_mean.squeeze(0).detach().cpu().numpy()
-    series = pd.Series(weights, index=checkpoint.tickers, name="policy_weight")
+    series = pd.Series(weights, index=output_tickers, name="policy_weight")
     series.index.name = "Ticker"
     return series
 

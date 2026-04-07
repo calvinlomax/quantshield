@@ -8,11 +8,12 @@ import warnings
 
 import pandas as pd
 
+from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE
 from quantshield.utils import ensure_directory, normalize_datetime_index, sanitize_ticker_slug
 
 DownloadProvider = Callable[..., pd.DataFrame]
 
-DEFAULT_UNIVERSE = ["SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "LQD", "GLD", "VNQ"]
+DEFAULT_UNIVERSE = list(CANONICAL_TOP_ETF_UNIVERSE)
 
 
 def _default_provider(**kwargs: object) -> pd.DataFrame:

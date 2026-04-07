@@ -6,16 +6,16 @@ The primary product workflow is:
 
 1. Train or load a saved transformer actor-critic checkpoint
 2. Launch the desktop app
-3. Enter checkpoint-compatible tickers, dates, benchmark, rebalance frequency, and starting capital
+3. Build a custom ticker universe in the desktop app, choose dates, benchmark, rebalance frequency, and starting capital
 4. Download and cache market data locally from `yfinance`
 5. Run deterministic policy inference across history
 6. Watch the backtest replay step by step with playback controls and a synchronized scrubber
 
-The default classical backtest config is tuned to beat the `SPY` benchmark on the saved historical sample:
-`SPY, QQQ, GLD` with `mean_variance`, historical covariance, `lookback=252`, `risk_aversion=0.1`
+The canonical training and benchmark universe is the top 10 ETF basket used across the repo:
+`VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV`
 
 The broader ETF basket is still available for classical experiments in `config/broad_universe_config.yaml`:
-`SPY, QQQ, IWM, EFA, EEM, TLT, LQD, GLD, VNQ`
+`VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV`
 
 ## Why QuantShield
 
@@ -129,7 +129,7 @@ QuantShield/
 
 The tuned benchmark suite is defined in [`src/quantshield/tuned_suite.py`](src/quantshield/tuned_suite.py).
 
-- Universe: `SPY, QQQ, GLD`
+- Universe: `VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV`
 - Objectives: `min_variance`, `mean_variance`, `risk_parity`, `equal_weight`
 - Rebalance style: rolling walk-forward backtest with weekly (`W-FRI`) rebalances in the ML pipeline
 - Constraint set: long-only, weights sum to one, max-weight controls, optional turnover penalty
@@ -169,7 +169,7 @@ The policy trainer:
 The desktop app is the default way to consume the trained model.
 
 - It loads a saved `actor_critic_policy.pt` checkpoint
-- It validates the user-entered ticker set against the checkpoint ticker universe
+- It lets the user build a custom replay universe with an add-ticker popup and per-letter suggestions
 - It downloads or reuses cached `yfinance` history for the selected dates
 - It rebuilds policy state windows from the downloaded return history
 - It runs deterministic policy inference through the saved actor-critic
@@ -229,7 +229,8 @@ python scripts/run_desktop_app.py
 The app lets you:
 
 - choose a saved checkpoint from the repo outputs
-- enter a comma-separated ticker list
+- use `Add Ticker` to open a popup search window with per-letter suggestions from `yfinance`
+- build a custom replay universe with at least 5 selected tickers
 - choose start date, end date, rebalance frequency, benchmark ticker, and starting capital
 - run inference over the selected history
 - watch the replay start automatically once preparation is complete
@@ -237,12 +238,12 @@ The app lets you:
 
 The desktop app uses cached downloads when possible. If the requested history is not cached, it fetches the required price data from `yfinance`, stores it under `data/raw/`, preprocesses returns locally, and then starts the replay.
 
-Important checkpoint compatibility rule:
+Ticker selection rules:
 
-- The selected checkpoint has a fixed trained ticker universe.
-- The ticker input must match that ticker set exactly.
-- Order does not matter because the app realigns to the checkpoint order internally.
-- If the entered set does not match the checkpoint, the app raises a clear ticker/model mismatch error instead of running invalid inference.
+- The backend policy is trained on the 10-ETF canonical universe listed above.
+- The desktop app now supports arbitrary user-entered `yfinance` tickers at inference time.
+- The app requires at least 5 selected tickers before it will run a replay.
+- The `Add Ticker` popup allows either suggestion-based selection or direct manual symbol entry.
 
 Optional checkpoint search override:
 
@@ -255,7 +256,7 @@ python scripts/run_desktop_app.py --checkpoint-root outputs/rl_policy
 1. Train the policy with the backend ML pipeline, or reuse an existing checkpoint in `outputs/rl_policy/`.
 2. Launch `python scripts/run_desktop_app.py`.
 3. Select a checkpoint in the model selector.
-4. Enter a comma-separated ticker list such as `SPY,QQQ,GLD`.
+4. Use `Add Ticker` to build a custom portfolio universe of at least 5 names.
 5. Choose the start date, end date, rebalance frequency, benchmark, and starting capital.
 6. Click `Run Replay`.
 7. After replay preparation finishes, playback begins automatically.
@@ -264,7 +265,7 @@ python scripts/run_desktop_app.py --checkpoint-root outputs/rl_policy
 What “watching a backtest in real time” means in the app:
 
 - The app is replaying historical inference, not streaming live prices.
-- It advances through past timesteps one step at a time so the equity curve, current weights, and benchmark comparison update continuously.
+- It advances through past timesteps one step at a time so the equity curve, current weights, return heat map, and benchmark comparison update continuously.
 - The slider stays synchronized with playback and also lets you jump backward or forward immediately.
 
 ## Run The Backend ML Workflow
@@ -380,7 +381,8 @@ During replay it renders live in-app charts for:
 
 - cumulative portfolio value vs benchmark
 - allocation history over time
-- current allocation bar chart
+- current allocation horizontal bar chart
+- timestamp-anchored asset return heat map
 
 ### Backend ML Artifacts
 
@@ -423,10 +425,10 @@ QuantShield ML pipeline complete.
 Tuned benchmark suite:
                tickers  annualized_return  benchmark_return  excess_return_vs_spy  ...
 Objective
-mean_variance  SPY,QQQ,GLD             0.1620            0.1327                0.0292  ...
-equal_weight   SPY,QQQ,GLD             0.1572            0.1327                0.0245  ...
-risk_parity    SPY,QQQ,GLD             0.1497            0.1327                0.0170  ...
-min_variance   SPY,QQQ,GLD             0.1347            0.1327                0.0020  ...
+mean_variance  VOO,IVV,SPY,VTI,QQQ,VEA,VUG,GLD,IEFA,VTV  0.1410  0.1194  0.0216  ...
+equal_weight   VOO,IVV,SPY,VTI,QQQ,VEA,VUG,GLD,IEFA,VTV  0.1322  0.1194  0.0128  ...
+risk_parity    VOO,IVV,SPY,VTI,QQQ,VEA,VUG,GLD,IEFA,VTV  0.1288  0.1194  0.0094  ...
+min_variance   VOO,IVV,SPY,VTI,QQQ,VEA,VUG,GLD,IEFA,VTV  0.1215  0.1194  0.0021  ...
 
 Policy benchmark comparison:
             samples  benchmark_mean_raw_return  policy_mean_raw_return  policy_mean_excess_return  t_statistic  p_value  significant_outperformance
@@ -464,7 +466,7 @@ Desktop-app specific coverage includes:
 - The classical benchmark suite is backtest-tuned on the same historical sample, so its outperformance versus `SPY` is exploratory rather than out-of-sample evidence.
 - The transformer actor-critic is trained offline from those benchmark outputs, so it should be treated as a research model rather than a production trading signal.
 - The desktop app is an inference and replay surface, not a training interface.
-- A saved checkpoint can only be used with the ticker universe it was trained on; cross-universe inference is intentionally rejected.
+- The policy is trained on the canonical 10-ETF universe, but the actor head is used at inference time on arbitrary user-selected `yfinance` baskets of at least 5 tickers.
 - The project avoids lookahead bias in the benchmark layer by training only on data known at each rebalance date.
 - Ledoit-Wolf remains the recommended default covariance estimator for the classical benchmark layer.
 - The ML model depends on PyTorch, while the desktop app adds PySide6 on top of that.

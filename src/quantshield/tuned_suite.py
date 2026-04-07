@@ -10,36 +10,37 @@ import pandas as pd
 
 from quantshield.config import AppConfig
 from quantshield.pipeline import prepare_market_data, run_pipeline_from_data, save_pipeline_artifacts
+from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE
 from quantshield.utils import ensure_directory, save_frame
 
 TUNED_PRESETS: dict[str, dict[str, object]] = {
     "min_variance": {
-        "tickers": ["SPY", "QQQ", "GLD"],
+        "tickers": list(CANONICAL_TOP_ETF_UNIVERSE),
         "covariance_estimator": "ledoit_wolf",
         "lookback_days": 252,
         "expanding_window": False,
-        "max_weight": 0.70,
-        "turnover_penalty": 0.0,
+        "max_weight": 0.20,
+        "turnover_penalty": 0.0015,
     },
     "mean_variance": {
-        "tickers": ["SPY", "QQQ", "GLD"],
-        "covariance_estimator": "historical",
-        "lookback_days": 252,
-        "expanding_window": False,
-        "max_weight": 1.0,
-        "turnover_penalty": 0.0,
-        "risk_aversion": 0.1,
-    },
-    "risk_parity": {
-        "tickers": ["SPY", "QQQ", "GLD"],
+        "tickers": list(CANONICAL_TOP_ETF_UNIVERSE),
         "covariance_estimator": "ledoit_wolf",
         "lookback_days": 252,
         "expanding_window": False,
-        "max_weight": 0.70,
-        "turnover_penalty": 0.0,
+        "max_weight": 0.20,
+        "turnover_penalty": 0.0015,
+        "risk_aversion": 0.75,
+    },
+    "risk_parity": {
+        "tickers": list(CANONICAL_TOP_ETF_UNIVERSE),
+        "covariance_estimator": "ledoit_wolf",
+        "lookback_days": 252,
+        "expanding_window": False,
+        "max_weight": 0.20,
+        "turnover_penalty": 0.0010,
     },
     "equal_weight": {
-        "tickers": ["SPY", "QQQ", "GLD"],
+        "tickers": list(CANONICAL_TOP_ETF_UNIVERSE),
         "covariance_estimator": "ledoit_wolf",
         "lookback_days": 252,
         "expanding_window": False,

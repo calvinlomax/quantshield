@@ -82,7 +82,7 @@ class AllocationHistoryCanvas(BaseReplayCanvas):
         self._cursor = None
 
     def set_result(self, result: PolicyReplayResult) -> None:
-        history = result.daily_weights.reindex(columns=result.checkpoint.tickers).fillna(0.0)
+        history = result.daily_weights.reindex(columns=result.requested_tickers).fillna(0.0)
         self.axes.clear()
         self._dates = pd.DatetimeIndex(history.index)
 
@@ -108,7 +108,7 @@ class AllocationHistoryCanvas(BaseReplayCanvas):
 
 
 class CurrentAllocationCanvas(BaseReplayCanvas):
-    """Bar chart of current policy weights at the active replay step."""
+    """Horizontal bar chart of current policy weights at the active replay step."""
 
     def __init__(self) -> None:
         super().__init__(height=2.6)
@@ -117,15 +117,15 @@ class CurrentAllocationCanvas(BaseReplayCanvas):
 
     def set_result(self, result: PolicyReplayResult) -> None:
         self.axes.clear()
-        self._tickers = list(result.checkpoint.tickers)
+        self._tickers = list(result.requested_tickers)
         bar_positions = np.arange(len(self._tickers))
-        self._bars = self.axes.bar(bar_positions, np.zeros(len(self._tickers)))
-        self.axes.set_xticks(bar_positions)
-        self.axes.set_xticklabels(self._tickers, rotation=45, ha="right")
-        self.axes.set_ylim(0.0, 1.0)
-        self.axes.set_ylabel("Weight")
+        self._bars = self.axes.barh(bar_positions, np.zeros(len(self._tickers)))
+        self.axes.set_yticks(bar_positions)
+        self.axes.set_yticklabels(self._tickers)
+        self.axes.set_xlim(0.0, 1.0)
+        self.axes.set_xlabel("Weight")
         self.axes.set_title("Current Model Allocation")
-        self.axes.grid(axis="y", alpha=0.25)
+        self.axes.grid(axis="x", alpha=0.25)
         self.draw_idle()
 
     def update_frame(self, frame: ReplayFrame) -> None:
@@ -133,6 +133,48 @@ class CurrentAllocationCanvas(BaseReplayCanvas):
             return
         weights = frame.weights.reindex(self._tickers).fillna(0.0)
         for bar, value in zip(self._bars, weights.to_numpy(dtype=float), strict=True):
-            bar.set_height(float(value))
+            bar.set_width(float(value))
         self.axes.set_title(f"Current Model Allocation ({frame.date.date().isoformat()})")
+        self.draw_idle()
+
+
+class TimestampHeatmapCanvas(BaseReplayCanvas):
+    """Dynamic asset-return heatmap anchored to the active replay timestamp."""
+
+    def __init__(self, *, trailing_window: int = 30) -> None:
+        super().__init__(height=2.6)
+        self.trailing_window = trailing_window
+        self._asset_returns: pd.DataFrame | None = None
+        self._colorbar = None
+
+    def set_result(self, result: PolicyReplayResult) -> None:
+        self._asset_returns = result.asset_returns.reindex(columns=result.requested_tickers).fillna(0.0)
+        self.update_frame(0)
+
+    def update_frame(self, frame_index: int) -> None:
+        if self._asset_returns is None or self._asset_returns.empty:
+            return
+        clamped = max(0, min(frame_index, len(self._asset_returns.index) - 1))
+        window = self._asset_returns.iloc[max(0, clamped - self.trailing_window + 1) : clamped + 1]
+
+        self.axes.clear()
+        image = self.axes.imshow(window.T.to_numpy(dtype=float), aspect="auto", cmap="coolwarm", interpolation="nearest")
+        self.axes.set_title(f"Trailing Return Heatmap Through {window.index[-1].date().isoformat()}")
+        self.axes.set_ylabel("Ticker")
+        self.axes.set_xlabel("Time Step")
+        self.axes.set_yticks(np.arange(len(window.columns)))
+        self.axes.set_yticklabels(list(window.columns))
+
+        if len(window.index) >= 3:
+            tick_positions = [0, len(window.index) // 2, len(window.index) - 1]
+        else:
+            tick_positions = list(range(len(window.index)))
+        self.axes.set_xticks(tick_positions)
+        self.axes.set_xticklabels([window.index[position].strftime("%Y-%m-%d") for position in tick_positions], rotation=20, ha="right")
+
+        if self._colorbar is None:
+            self._colorbar = self.figure.colorbar(image, ax=self.axes, shrink=0.85)
+            self._colorbar.set_label("Return")
+        else:
+            self._colorbar.update_normal(image)
         self.draw_idle()
