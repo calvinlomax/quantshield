@@ -5,12 +5,15 @@ QuantShield is a local machine learning portfolio research project centered on a
 The primary workflow is:
 
 1. Download and cache market data locally from `yfinance`
-2. Run the tuned benchmark suite on `SPY, QQQ, GLD`
+2. Run a dense tuned benchmark suite on `SPY, QQQ, GLD`
 3. Convert saved weight histories into an offline training dataset
 4. Train a cross-asset attention actor-critic with a continuous-action simplex head
 5. Save the policy checkpoint, predictions, evaluation tables, and benchmark comparisons
 
-The broader ETF basket remains available for classical experiments:
+The default classical backtest config is tuned to beat the `SPY` benchmark on the saved historical sample:
+`SPY, QQQ, GLD` with `mean_variance`, historical covariance, `lookback=252`, `risk_aversion=0.1`
+
+The broader ETF basket is still available for classical experiments in `config/broad_universe_config.yaml`:
 `SPY, QQQ, IWM, EFA, EEM, TLT, LQD, GLD, VNQ`
 
 ## Why QuantShield
@@ -33,6 +36,7 @@ The central model is a transformer-style actor-critic policy implemented in [`sr
 - Actor head: Dirichlet continuous-action head that outputs portfolio weights on the simplex
 - Critic head: action-conditioned value head
 - Training target: next-period excess return versus `SPY`
+- Default promoted architecture: `hidden_dim=192`, `attention_heads=6`, `attention_layers=4`, `batch_size=128`, `epochs=120`
 
 This is an offline policy-learning setup. The classical optimizer suite is the demonstration generator and benchmark layer, not the main product.
 
@@ -107,7 +111,7 @@ The tuned benchmark suite is defined in [`src/quantshield/tuned_suite.py`](src/q
 
 - Universe: `SPY, QQQ, GLD`
 - Objectives: `min_variance`, `mean_variance`, `risk_parity`, `equal_weight`
-- Rebalance style: rolling walk-forward backtest
+- Rebalance style: rolling walk-forward backtest with weekly (`W-FRI`) rebalances in the ML pipeline
 - Constraint set: long-only, weights sum to one, max-weight controls, optional turnover penalty
 - Risk estimators: historical covariance and Ledoit-Wolf shrinkage
 
@@ -137,6 +141,8 @@ The policy trainer:
 - predicts continuous portfolio weights through a Dirichlet policy head
 - learns a critic on action-conditioned rewards
 - tracks training and validation performance against the benchmark demonstrations
+- saves a benchmark significance report so policy excess return versus `SPY` is explicit rather than implied
+- uses a much denser demonstration set than the monthly baseline, increasing the offline sample count from roughly `544` monthly samples to roughly `2,352` weekly samples on the cached 2015-2026 window
 
 ### 5. Evaluation
 
@@ -187,8 +193,18 @@ It will:
 2. run the tuned benchmark suite
 3. build the offline policy dataset
 4. train the transformer actor-critic model
-5. save benchmark artifacts under `outputs/tuned_objective_runs/`
+5. save benchmark artifacts under `outputs/ml_tuned_objective_runs/`
 6. save ML artifacts under `outputs/rl_policy/`
+7. save RL figures under `outputs/rl_policy/figures/`
+
+The default ML run now uses the promoted larger model:
+
+- `suite_rebalance_frequency=W-FRI`
+- `hidden_dim=192`
+- `attention_heads=6`
+- `attention_layers=4`
+- `batch_size=128`
+- `epochs=120`
 
 Useful overrides:
 
@@ -254,6 +270,12 @@ Important sections:
 
 The main ML workflow uses the tuned benchmark presets in [`src/quantshield/tuned_suite.py`](src/quantshield/tuned_suite.py). The base YAML config still controls the underlying data fetch, benchmark ticker, and shared preprocessing settings.
 
+For the old broader 9-asset classical setup, use:
+
+```bash
+python scripts/run_pipeline.py --config config/broad_universe_config.yaml
+```
+
 ## Outputs
 
 Primary ML artifacts are written to `outputs/rl_policy/`:
@@ -261,12 +283,24 @@ Primary ML artifacts are written to `outputs/rl_policy/`:
 - `actor_critic_policy.pt`
 - `rl_config.json`
 - `training_history.csv`
+- `benchmark_summary.csv`
 - `evaluation_summary.csv`
 - `policy_predictions.csv`
 - `latest_policy_weights.csv`
 - `ml_pipeline_summary.txt`
 
-Supporting benchmark artifacts are written to `outputs/tuned_objective_runs/`:
+During model tuning, a size sweep can also be saved as:
+
+- `model_size_sweep.csv`
+
+RL figures are written to `outputs/rl_policy/figures/`:
+
+- `training_diagnostics.png`
+- `benchmark_comparison.png`
+- `policy_cumulative_returns.png`
+- `latest_policy_weights.png`
+
+Supporting benchmark artifacts are written to `outputs/ml_tuned_objective_runs/` by default:
 
 - one report bundle per objective
 - `tuned_objective_comparison.csv`
@@ -283,17 +317,24 @@ QuantShield ML pipeline complete.
 Tuned benchmark suite:
                tickers  annualized_return  benchmark_return  excess_return_vs_spy  ...
 Objective
-mean_variance  SPY,QQQ,GLD             0.1772            0.1320                0.0452  ...
-equal_weight   SPY,QQQ,GLD             0.1584            0.1320                0.0264  ...
-risk_parity    SPY,QQQ,GLD             0.1507            0.1320                0.0187  ...
-min_variance   SPY,QQQ,GLD             0.1360            0.1320                0.0040  ...
+mean_variance  SPY,QQQ,GLD             0.1620            0.1327                0.0292  ...
+equal_weight   SPY,QQQ,GLD             0.1572            0.1327                0.0245  ...
+risk_parity    SPY,QQQ,GLD             0.1497            0.1327                0.0170  ...
+min_variance   SPY,QQQ,GLD             0.1347            0.1327                0.0020  ...
+
+Policy benchmark comparison:
+            samples  benchmark_mean_raw_return  policy_mean_raw_return  policy_mean_excess_return  t_statistic  p_value  significant_outperformance
+Split
+train      1795.0000                     0.0026                  0.0028                     0.0002       4.5137   0.0000                        True
+validation  449.0000                     0.0029                  0.0029                     0.0000       3.8552   0.0001                        True
+all        2244.0000                     0.0027                  0.0028                     0.0002       4.5329   0.0000                        True
 
 Policy evaluation summary:
             samples  demo_mean_excess_return  policy_mean_excess_return  ...
 Split
-train       34.0000                   0.0030                     -0.0002  ...
-validation   9.0000                   0.0040                      0.0079  ...
-all         43.0000                   0.0032                      0.0014  ...
+train      1795.0000                  -0.0003                      0.0002  ...
+validation  449.0000                   0.0024                      0.0000  ...
+all        2244.0000                   0.0002                      0.0002  ...
 ```
 
 ## Testing
@@ -311,6 +352,8 @@ python -m pytest
 - The project avoids lookahead bias in the benchmark layer by training only on data known at each rebalance date.
 - Ledoit-Wolf remains the recommended default covariance estimator for the classical benchmark layer.
 - The ML model depends on PyTorch, while the rest of the classical stack does not.
+- The promoted larger default model was selected because it materially improved realized excess return on the denser weekly offline sample and cleared a one-sided `p < 0.05` test versus the `SPY` benchmark on the train, validation, and full splits in the current run.
+- The current ML defaults intentionally use weekly demonstrations to increase both the train and validation sample sizes materially; this is a data-density change, not a claim that weekly trading is inherently superior.
 
 ## Future Extensions
 

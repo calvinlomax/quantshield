@@ -29,6 +29,7 @@ except ImportError as exc:  # pragma: no cover - depends on optional torch insta
 
 
 DEFAULT_OBJECTIVES = ["min_variance", "mean_variance", "risk_parity", "equal_weight"]
+DEFAULT_SUITE_ROOT = "outputs/ml_tuned_objective_runs"
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="config/default_config.yaml", help="Path to the base YAML config.")
     parser.add_argument(
         "--suite-root",
-        default="outputs/tuned_objective_runs",
+        default=DEFAULT_SUITE_ROOT,
         help="Directory containing the saved tuned suite weight histories.",
     )
     parser.add_argument(
@@ -47,11 +48,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default="outputs/rl_policy", help="Directory where RL artifacts will be written.")
     parser.add_argument("--lookback-window", type=int, default=63, help="Trailing return window used to build states.")
-    parser.add_argument("--epochs", type=int, default=40, help="Number of training epochs.")
-    parser.add_argument("--batch-size", type=int, default=32, help="Mini-batch size.")
-    parser.add_argument("--hidden-dim", type=int, default=64, help="Transformer hidden dimension.")
-    parser.add_argument("--attention-heads", type=int, default=4, help="Number of cross-asset attention heads.")
-    parser.add_argument("--attention-layers", type=int, default=2, help="Number of stacked cross-asset attention layers.")
+    parser.add_argument("--epochs", type=int, default=120, help="Number of training epochs.")
+    parser.add_argument("--batch-size", type=int, default=128, help="Mini-batch size.")
+    parser.add_argument("--hidden-dim", type=int, default=192, help="Transformer hidden dimension.")
+    parser.add_argument("--attention-heads", type=int, default=6, help="Number of cross-asset attention heads.")
+    parser.add_argument("--attention-layers", type=int, default=4, help="Number of stacked cross-asset attention layers.")
     parser.add_argument("--device", help="Optional torch device override, for example cpu or cuda.")
     return parser.parse_args()
 
@@ -80,10 +81,15 @@ def main() -> None:
     artifact_paths = save_actor_critic_artifacts(result, args.output_dir)
 
     print("Transformer actor-critic training complete.")
+    print("Benchmark comparison:")
+    print(result.benchmark_summary.to_string(float_format=lambda value: f"{value:0.4f}"))
+    print("")
+    print("Evaluation summary:")
     print(result.evaluation_summary.to_string(float_format=lambda value: f"{value:0.4f}"))
     print("")
     print(f"Saved model checkpoint to {artifact_paths['model']}")
-    print(f"Saved evaluation summary to {artifact_paths['evaluation_summary']}")
+    print(f"Saved benchmark summary to {artifact_paths['benchmark_summary']}")
+    print(f"Saved RL figures to {Path(artifact_paths['training_diagnostics_fig']).parent}")
 
 
 if __name__ == "__main__":

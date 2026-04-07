@@ -9,12 +9,19 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.distributions import Dirichlet
 from torch.utils.data import DataLoader, TensorDataset
 
+from quantshield.plotting import (
+    plot_rl_benchmark_comparison,
+    plot_rl_latest_weights,
+    plot_rl_policy_cumulative_returns,
+    plot_rl_training_diagnostics,
+)
 from quantshield.utils import ensure_directory, save_frame
 
 
@@ -42,14 +49,14 @@ class RLTrainingConfig:
     """Configuration for offline actor-critic training."""
 
     lookback_window: int = 63
-    hidden_dim: int = 64
-    attention_heads: int = 4
-    attention_layers: int = 2
+    hidden_dim: int = 192
+    attention_heads: int = 6
+    attention_layers: int = 4
     dropout: float = 0.10
     learning_rate: float = 1e-3
     weight_decay: float = 1e-5
-    batch_size: int = 32
-    epochs: int = 40
+    batch_size: int = 128
+    epochs: int = 120
     actor_bc_weight: float = 5.0
     entropy_weight: float = 1e-3
     validation_fraction: float = 0.20
@@ -96,6 +103,7 @@ class RLTrainingResult:
     config: RLTrainingConfig
     history: pd.DataFrame
     evaluation_summary: pd.DataFrame
+    benchmark_summary: pd.DataFrame
     policy_predictions: pd.DataFrame
     latest_policy_weights: pd.Series
     tickers: list[str]
@@ -308,6 +316,50 @@ def _predict_policy_actions(
     return np.concatenate(outputs, axis=0)
 
 
+def _one_sided_greater_test(values: np.ndarray) -> tuple[float, float]:
+    """Return a one-sided t-statistic and p-value for mean(values) > 0."""
+    sample = np.asarray(values, dtype=np.float64)
+    if len(sample) < 2:
+        return float("nan"), float("nan")
+    result = stats.ttest_1samp(sample, 0.0, alternative="greater")
+    return float(result.statistic), float(result.pvalue)
+
+
+def _build_benchmark_summary(
+    *,
+    train_policy_raw: np.ndarray,
+    train_policy_excess: np.ndarray,
+    train_benchmark_raw: np.ndarray,
+    validation_policy_raw: np.ndarray,
+    validation_policy_excess: np.ndarray,
+    validation_benchmark_raw: np.ndarray,
+    full_policy_raw: np.ndarray,
+    full_policy_excess: np.ndarray,
+    full_benchmark_raw: np.ndarray,
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """Summarize policy performance against the benchmark with significance tests."""
+    rows: dict[str, dict[str, float | bool]] = {}
+    for split_name, policy_raw, policy_excess, benchmark_raw in [
+        ("train", train_policy_raw, train_policy_excess, train_benchmark_raw),
+        ("validation", validation_policy_raw, validation_policy_excess, validation_benchmark_raw),
+        ("all", full_policy_raw, full_policy_excess, full_benchmark_raw),
+    ]:
+        t_statistic, p_value = _one_sided_greater_test(policy_excess)
+        rows[split_name] = {
+            "samples": len(policy_excess),
+            "benchmark_mean_raw_return": float(np.mean(benchmark_raw)),
+            "policy_mean_raw_return": float(np.mean(policy_raw)),
+            "policy_mean_excess_return": float(np.mean(policy_excess)),
+            "t_statistic": t_statistic,
+            "p_value": p_value,
+            "significant_outperformance": bool(np.isfinite(p_value) and p_value < alpha and np.mean(policy_excess) > 0.0),
+        }
+    summary = pd.DataFrame(rows).T
+    summary.index.name = "Split"
+    return summary
+
+
 def train_transformer_actor_critic(
     dataset: OfflinePortfolioDataset,
     config: RLTrainingConfig,
@@ -440,6 +492,17 @@ def train_transformer_actor_critic(
         dataset.forward_segments,
         dataset.benchmark_rewards,
     )
+    benchmark_summary = _build_benchmark_summary(
+        train_policy_raw=train_policy_raw,
+        train_policy_excess=train_policy_excess,
+        train_benchmark_raw=train_dataset.benchmark_rewards,
+        validation_policy_raw=validation_policy_raw,
+        validation_policy_excess=validation_policy_excess,
+        validation_benchmark_raw=validation_dataset.benchmark_rewards,
+        full_policy_raw=full_policy_raw,
+        full_policy_excess=full_policy_excess,
+        full_benchmark_raw=dataset.benchmark_rewards,
+    )
 
     prediction_rows: list[dict[str, object]] = []
     for sample_idx, (metadata_row, demo_action, policy_action, demo_raw, demo_excess, policy_raw, policy_excess) in enumerate(
@@ -518,6 +581,7 @@ def train_transformer_actor_critic(
         config=config,
         history=history,
         evaluation_summary=evaluation_summary,
+        benchmark_summary=benchmark_summary,
         policy_predictions=policy_predictions,
         latest_policy_weights=latest_policy_weights,
         tickers=dataset.tickers,
@@ -530,6 +594,7 @@ def save_actor_critic_artifacts(
 ) -> dict[str, Path]:
     """Save model weights and evaluation artifacts to disk."""
     destination = ensure_directory(output_dir)
+    figures_dir = ensure_directory(destination / "figures")
 
     config_path = destination / "rl_config.json"
     config_path.write_text(json.dumps(asdict(result.config), indent=2), encoding="utf-8")
@@ -549,7 +614,15 @@ def save_actor_critic_artifacts(
         "model": model_path,
         "training_history": save_frame(result.history, destination / "training_history.csv"),
         "evaluation_summary": save_frame(result.evaluation_summary, destination / "evaluation_summary.csv"),
+        "benchmark_summary": save_frame(result.benchmark_summary, destination / "benchmark_summary.csv"),
         "policy_predictions": save_frame(result.policy_predictions.set_index("sample_id"), destination / "policy_predictions.csv"),
         "latest_policy_weights": save_frame(result.latest_policy_weights, destination / "latest_policy_weights.csv"),
+        "training_diagnostics_fig": plot_rl_training_diagnostics(result.history, figures_dir / "training_diagnostics.png"),
+        "benchmark_comparison_fig": plot_rl_benchmark_comparison(result.benchmark_summary, figures_dir / "benchmark_comparison.png"),
+        "policy_cumulative_returns_fig": plot_rl_policy_cumulative_returns(
+            result.policy_predictions,
+            figures_dir / "policy_cumulative_returns.png",
+        ),
+        "latest_policy_weights_fig": plot_rl_latest_weights(result.latest_policy_weights, figures_dir / "latest_policy_weights.png"),
     }
     return paths

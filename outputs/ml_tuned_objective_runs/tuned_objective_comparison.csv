@@ -1,0 +1,5 @@
+Objective,tickers,annualized_return,benchmark_return,excess_return_vs_spy,annualized_volatility,sharpe_ratio,max_drawdown,average_turnover,summary_report
+mean_variance,"SPY,QQQ,GLD",0.16196195313323947,0.1327314761657401,0.029230476967499364,0.19269250878221264,0.840520236914317,-0.3784220087110721,0.0945129086078714,outputs/ml_tuned_objective_runs/mean_variance/tables/summary_report.txt
+equal_weight,"SPY,QQQ,GLD",0.15724567457993088,0.1327314761657401,0.02451419841419078,0.1449468451211782,1.084850618504119,-0.22967872148376067,0.0,outputs/ml_tuned_objective_runs/equal_weight/tables/summary_report.txt
+risk_parity,"SPY,QQQ,GLD",0.14970132048357598,0.1327314761657401,0.01696984431783588,0.1285856288625303,1.164215020044116,-0.20299587369732774,0.0038346650609171365,outputs/ml_tuned_objective_runs/risk_parity/tables/summary_report.txt
+min_variance,"SPY,QQQ,GLD",0.1347453126747209,0.1327314761657401,0.002013836508980793,0.11976936035478812,1.1250399290400324,-0.1803137340111619,0.008310850609703699,outputs/ml_tuned_objective_runs/min_variance/tables/summary_report.txt

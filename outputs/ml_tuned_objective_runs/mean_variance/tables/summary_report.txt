@@ -1,0 +1,41 @@
+QuantShield Summary Report
+=========================
+
+Universe: SPY, QQQ, GLD
+Sample window: 2015-01-02 to 2026-04-06
+Lookback window: 252 trading days
+Rebalance frequency: W-FRI
+Covariance estimator: historical
+Optimization objective: mean_variance
+Latest constraint check: no violations reported
+
+Final weights:
+  GLD: 100.00%
+  QQQ: 0.00%
+  SPY: 0.00%
+
+Performance summary:
+              annualized_return  annualized_volatility  sharpe_ratio  sortino_ratio  max_drawdown  calmar_ratio
+Portfolio                                                                                                      
+portfolio                0.1620                 0.1927        0.8405         1.0892       -0.3784        0.4280
+equal_weight             0.1572                 0.1449        1.0849         1.3742       -0.2297        0.6846
+benchmark                0.1327                 0.1794        0.7399         0.8987       -0.3372        0.3937
+
+Average turnover: 0.0945
+Herfindahl index: 1.0000
+Top weight share: 1.0000
+
+Risk attribution summary:
+        weight  component_risk  percentage_risk
+Ticker                                         
+GLD     1.0000          0.2789           1.0000
+QQQ     0.0000          0.0000           0.0000
+SPY     0.0000          0.0000           0.0000
+
+Stress test summary:
+                           stressed_return  stressed_volatility largest_loss_contributor  largest_loss_contribution                                                                           notes
+Scenario                                                                                                                                                                                           
+equity_market_shock                -0.0000                  NaN                      QQQ                    -0.0000                                     Custom return shock applied asset by asset.
+interest_rate_shock_proxy           0.0000                  NaN                      SPY                     0.0000                                     Custom return shock applied asset by asset.
+correlation_spike                      NaN               0.3486                      GLD                     0.3486  Returns are unchanged in this scenario; only portfolio volatility is stressed.
+single_asset_crash                 -0.3000                  NaN                      GLD                    -0.3000                                     Custom return shock applied asset by asset.

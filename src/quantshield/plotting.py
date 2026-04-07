@@ -133,3 +133,124 @@ def plot_efficient_frontier(
     ax.set_ylabel("Expected Return")
     ax.grid(alpha=0.25)
     return _finalize_figure(path)
+
+
+def plot_rl_training_diagnostics(history: pd.DataFrame, path: str | Path) -> Path:
+    fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
+
+    loss_columns = [
+        column
+        for column in ["train_total_loss", "train_actor_loss", "train_critic_loss", "train_bc_loss"]
+        if column in history.columns
+    ]
+    history[loss_columns].plot(ax=axes[0], linewidth=1.2)
+    axes[0].set_title("RL Training Diagnostics")
+    axes[0].set_ylabel("Loss")
+    axes[0].grid(alpha=0.25)
+
+    return_columns = [
+        column
+        for column in ["train_policy_excess_return", "validation_policy_excess_return"]
+        if column in history.columns
+    ]
+    history[return_columns].plot(ax=axes[1], linewidth=1.4)
+    if "train_demo_excess_return" in history.columns:
+        axes[1].plot(history.index, history["train_demo_excess_return"], linestyle="--", linewidth=1.0, label="train_demo_excess_return")
+    if "validation_demo_excess_return" in history.columns:
+        axes[1].plot(
+            history.index,
+            history["validation_demo_excess_return"],
+            linestyle="--",
+            linewidth=1.0,
+            label="validation_demo_excess_return",
+        )
+    axes[1].axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Mean Excess Return")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend(loc="best")
+    return _finalize_figure(path)
+
+
+def plot_rl_benchmark_comparison(benchmark_summary: pd.DataFrame, path: str | Path) -> Path:
+    summary = benchmark_summary.copy()
+    labels = summary.index.tolist()
+    x = np.arange(len(labels))
+    width = 0.36
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+
+    axes[0].bar(x - width / 2, summary["benchmark_mean_raw_return"], width=width, label="Benchmark")
+    axes[0].bar(x + width / 2, summary["policy_mean_raw_return"], width=width, label="Policy")
+    axes[0].set_title("Policy vs Benchmark Mean Raw Return")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(labels)
+    axes[0].set_ylabel("Mean Return Per Rebalance")
+    axes[0].grid(axis="y", alpha=0.25)
+    axes[0].legend(loc="best")
+
+    bars = axes[1].bar(x, summary["policy_mean_excess_return"])
+    axes[1].axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+    axes[1].set_title("Policy Excess Return vs Benchmark")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(labels)
+    axes[1].set_ylabel("Mean Excess Return Per Rebalance")
+    axes[1].grid(axis="y", alpha=0.25)
+    for bar, p_value, significant in zip(
+        bars,
+        summary["p_value"].to_numpy(),
+        summary["significant_outperformance"].to_numpy(),
+        strict=True,
+    ):
+        y = float(bar.get_height())
+        offset = 0.001 if y >= 0.0 else -0.001
+        va = "bottom" if y >= 0.0 else "top"
+        label = f"p={p_value:.3g}"
+        if bool(significant):
+            label += " *"
+        axes[1].text(bar.get_x() + bar.get_width() / 2.0, y + offset, label, ha="center", va=va, fontsize=8)
+    return _finalize_figure(path)
+
+
+def plot_rl_policy_cumulative_returns(policy_predictions: pd.DataFrame, path: str | Path) -> Path:
+    frame = policy_predictions.copy()
+    benchmark_returns = frame["policy_raw_return"] - frame["policy_excess_return"]
+    frame["benchmark_raw_return"] = benchmark_returns
+
+    if "rebalance_date" in frame.columns:
+        frame["rebalance_date"] = pd.to_datetime(frame["rebalance_date"])
+        grouped = (
+            frame.sort_values(["rebalance_date", "sample_id"])
+            .groupby("rebalance_date")[["policy_raw_return", "demo_raw_return", "benchmark_raw_return"]]
+            .mean()
+        )
+    else:
+        grouped = frame[["policy_raw_return", "demo_raw_return", "benchmark_raw_return"]].copy()
+        grouped.index = pd.RangeIndex(start=1, stop=len(grouped) + 1, name="RebalanceNumber")
+
+    compounded = (1.0 + grouped).cumprod()
+    compounded = compounded.rename(
+        columns={
+            "policy_raw_return": "Policy",
+            "demo_raw_return": "Demonstration Average",
+            "benchmark_raw_return": "Benchmark",
+        }
+    )
+
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    compounded.plot(ax=ax, linewidth=1.5)
+    ax.set_title("Compounded Returns Across Rebalance Periods")
+    ax.set_ylabel("Growth of $1")
+    ax.grid(alpha=0.25)
+    return _finalize_figure(path)
+
+
+def plot_rl_latest_weights(weights: pd.Series, path: str | Path) -> Path:
+    ordered = weights.sort_values(ascending=False)
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+    ordered.plot(kind="bar", ax=ax)
+    ax.set_title("Latest Policy Weights")
+    ax.set_ylabel("Weight")
+    ax.set_ylim(0.0, max(1.0, float(ordered.max()) * 1.15))
+    ax.grid(axis="y", alpha=0.25)
+    return _finalize_figure(path)

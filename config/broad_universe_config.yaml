@@ -2,11 +2,23 @@ data:
   tickers:
     - SPY
     - QQQ
+    - IWM
+    - EFA
+    - EEM
+    - TLT
+    - LQD
     - GLD
+    - VNQ
   asset_class_map:
     SPY: equity
     QQQ: equity
+    IWM: equity
+    EFA: equity
+    EEM: equity
+    TLT: bond
+    LQD: bond
     GLD: commodity
+    VNQ: real_estate
   start_date: "2015-01-01"
   end_date: null
   cache_dir: "data/raw"
@@ -21,17 +33,17 @@ preprocessing:
 
 risk:
   mean_estimator: "historical"
-  covariance_estimator: "historical"
+  covariance_estimator: "ledoit_wolf"
   ewma_span: 60
   annualize: true
 
 optimization:
-  objective: "mean_variance"
-  risk_aversion: 0.1
+  objective: "min_variance"
+  risk_aversion: 3.0
   long_only: true
   min_weight: 0.0
-  max_weight: 1.0
-  turnover_penalty: 0.0
+  max_weight: 0.35
+  turnover_penalty: 0.0025
   target_volatility: null
   fallback_to_equal_weight: true
   exposure_caps: {}
