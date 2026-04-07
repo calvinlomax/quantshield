@@ -1,14 +1,15 @@
 # QuantShield
 
-QuantShield is a local machine learning portfolio research project centered on a transformer-based actor-critic policy. The classical portfolio engine is still in the repo, but it now serves a supporting role: it downloads market data from `yfinance`, generates constrained benchmark portfolios, and produces the demonstration weights used to train the policy.
+QuantShield is a local machine learning portfolio research project centered on a transformer-based actor-critic policy, with a cross-platform PySide6 desktop app as the main user-facing product. The classical portfolio engine is still in the repo, but it now serves a supporting role: it downloads market data from `yfinance`, generates constrained benchmark portfolios, and produces the demonstration weights used to train the policy.
 
-The primary workflow is:
+The primary product workflow is:
 
-1. Download and cache market data locally from `yfinance`
-2. Run a dense tuned benchmark suite on `SPY, QQQ, GLD`
-3. Convert saved weight histories into an offline training dataset
-4. Train a cross-asset attention actor-critic with a continuous-action simplex head
-5. Save the policy checkpoint, predictions, evaluation tables, and benchmark comparisons
+1. Train or load a saved transformer actor-critic checkpoint
+2. Launch the desktop app
+3. Enter checkpoint-compatible tickers, dates, benchmark, rebalance frequency, and starting capital
+4. Download and cache market data locally from `yfinance`
+5. Run deterministic policy inference across history
+6. Watch the backtest replay step by step with playback controls and a synchronized scrubber
 
 The default classical backtest config is tuned to beat the `SPY` benchmark on the saved historical sample:
 `SPY, QQQ, GLD` with `mean_variance`, historical covariance, `lookback=252`, `risk_aversion=0.1`
@@ -20,10 +21,11 @@ The broader ETF basket is still available for classical experiments in `config/b
 
 QuantShield is useful if you want a reproducible local workflow for portfolio ML without depending on pre-downloaded datasets or cloud-only research stacks.
 
-- All training data is fetched locally with Python from `yfinance`
+- All training and inference data is fetched locally with Python from `yfinance`
 - Raw prices are cached for reproducibility
 - The ML model is benchmarked against explicit constrained allocation rules
 - The policy is trained on saved weight histories instead of opaque manual labels
+- The desktop app replays the saved policy over historical data instead of only producing static reports
 - Outputs are written as CSV, TXT, PNG, and `.pt` artifacts for inspection
 
 ## What Is The Central Model
@@ -38,7 +40,7 @@ The central model is a transformer-style actor-critic policy implemented in [`sr
 - Training target: next-period excess return versus `SPY`
 - Default promoted architecture: `hidden_dim=192`, `attention_heads=6`, `attention_layers=4`, `batch_size=128`, `epochs=120`
 
-This is an offline policy-learning setup. The classical optimizer suite is the demonstration generator and benchmark layer, not the main product.
+This is an offline policy-learning setup. The classical optimizer suite is the demonstration generator and benchmark layer, not the main product. The main product surface is the desktop replay app that loads the trained checkpoint for inference.
 
 ## Project Architecture
 
@@ -47,17 +49,20 @@ QuantShield/
   README.md
   requirements.txt
   requirements-rl.txt
+  requirements-app.txt
   pyproject.toml
   config/
+    broad_universe_config.yaml
     default_config.yaml
   data/
     raw/
     processed/
   outputs/
     figures/
+    ml_tuned_objective_runs/
+    rl_policy/
     tables/
     tuned_objective_runs/
-    rl_policy/
   src/
     quantshield/
       __init__.py
@@ -76,8 +81,22 @@ QuantShield/
       stress_test.py
       tuned_suite.py
       utils.py
+    quantshield_app/
+      __init__.py
+      main.py
+      services/
+        checkpoint_service.py
+        input_parser.py
+        market_data_service.py
+        replay_service.py
+      ui/
+        charts.py
+        main_window.py
+      viewmodels/
+        replay_controller.py
   scripts/
     fetch_data.py
+    run_desktop_app.py
     run_backtest.py
     run_ml_pipeline.py
     run_pipeline.py
@@ -89,6 +108,7 @@ QuantShield/
   tests/
     conftest.py
     test_data_loader.py
+    test_desktop_app.py
     test_metrics.py
     test_optimization.py
     test_rl.py
@@ -144,7 +164,19 @@ The policy trainer:
 - saves a benchmark significance report so policy excess return versus `SPY` is explicit rather than implied
 - uses a much denser demonstration set than the monthly baseline, increasing the offline sample count from roughly `544` monthly samples to roughly `2,352` weekly samples on the cached 2015-2026 window
 
-### 5. Evaluation
+### 5. Desktop Inference Replay
+
+The desktop app is the default way to consume the trained model.
+
+- It loads a saved `actor_critic_policy.pt` checkpoint
+- It validates the user-entered ticker set against the checkpoint ticker universe
+- It downloads or reuses cached `yfinance` history for the selected dates
+- It rebuilds policy state windows from the downloaded return history
+- It runs deterministic policy inference through the saved actor-critic
+- It simulates a historical replay step by step
+- It shows synchronized charts, playback controls, current weights, and summary metrics
+
+### 6. Evaluation
 
 The saved evaluation artifacts include:
 
@@ -173,15 +205,71 @@ Install the ML dependency layer:
 pip install -r requirements-rl.txt
 ```
 
-Optional editable install:
+Install the desktop app dependency layer:
+
+```bash
+pip install -r requirements-app.txt
+```
+
+Optional editable installs:
 
 ```bash
 pip install -e .[rl]
+pip install -e .[app]
 ```
 
-## Run The Main ML Workflow
+## Launch The Desktop App
 
-This is the canonical command for the repo:
+This is the main inference interface for QuantShield:
+
+```bash
+python scripts/run_desktop_app.py
+```
+
+The app lets you:
+
+- choose a saved checkpoint from the repo outputs
+- enter a comma-separated ticker list
+- choose start date, end date, rebalance frequency, benchmark ticker, and starting capital
+- run inference over the selected history
+- watch the replay start automatically once preparation is complete
+- use `Play`, `Pause`, `Restart`, `Step Back`, `Step Forward`, the speed selector, and the timeline slider to inspect any timestep
+
+The desktop app uses cached downloads when possible. If the requested history is not cached, it fetches the required price data from `yfinance`, stores it under `data/raw/`, preprocesses returns locally, and then starts the replay.
+
+Important checkpoint compatibility rule:
+
+- The selected checkpoint has a fixed trained ticker universe.
+- The ticker input must match that ticker set exactly.
+- Order does not matter because the app realigns to the checkpoint order internally.
+- If the entered set does not match the checkpoint, the app raises a clear ticker/model mismatch error instead of running invalid inference.
+
+Optional checkpoint search override:
+
+```bash
+python scripts/run_desktop_app.py --checkpoint-root outputs/rl_policy
+```
+
+## Desktop Replay Flow
+
+1. Train the policy with the backend ML pipeline, or reuse an existing checkpoint in `outputs/rl_policy/`.
+2. Launch `python scripts/run_desktop_app.py`.
+3. Select a checkpoint in the model selector.
+4. Enter a comma-separated ticker list such as `SPY,QQQ,GLD`.
+5. Choose the start date, end date, rebalance frequency, benchmark, and starting capital.
+6. Click `Run Replay`.
+7. After replay preparation finishes, playback begins automatically.
+8. Pause or scrub the slider to inspect earlier or later portfolio states instantly.
+
+What “watching a backtest in real time” means in the app:
+
+- The app is replaying historical inference, not streaming live prices.
+- It advances through past timesteps one step at a time so the equity curve, current weights, and benchmark comparison update continuously.
+- The slider stays synchronized with playback and also lets you jump backward or forward immediately.
+
+## Run The Backend ML Workflow
+
+The command-line ML pipeline remains the backend path that creates the saved checkpoint used by the desktop app:
 
 ```bash
 python scripts/run_ml_pipeline.py
@@ -223,7 +311,7 @@ python scripts/run_ml_pipeline.py --skip-suite
 
 ## Lower-Level Scripts
 
-If you want to run individual layers instead of the main ML workflow:
+If you want to run individual backend layers instead of the main ML workflow:
 
 Fetch and cache data only:
 
@@ -236,6 +324,8 @@ Generate the tuned benchmark suite only:
 ```bash
 python scripts/run_tuned_suite.py
 ```
+
+That command writes the smaller monthly classical suite to `outputs/tuned_objective_runs/`.
 
 Train the policy from existing benchmark outputs only:
 
@@ -277,6 +367,22 @@ python scripts/run_pipeline.py --config config/broad_universe_config.yaml
 ```
 
 ## Outputs
+
+### Desktop App Inputs
+
+The desktop app consumes:
+
+- `outputs/rl_policy/actor_critic_policy.pt`
+- `outputs/rl_policy/rl_config.json`
+- cached market data under `data/raw/`
+
+During replay it renders live in-app charts for:
+
+- cumulative portfolio value vs benchmark
+- allocation history over time
+- current allocation bar chart
+
+### Backend ML Artifacts
 
 Primary ML artifacts are written to `outputs/rl_policy/`:
 
@@ -345,13 +451,23 @@ Run tests after installing dependencies:
 python -m pytest
 ```
 
+Desktop-app specific coverage includes:
+
+- ticker parsing
+- market-data preparation edge cases
+- checkpoint discovery and loading
+- replay stepping
+- slider scrubbing state via the replay controller
+
 ## Notes And Assumptions
 
 - The classical benchmark suite is backtest-tuned on the same historical sample, so its outperformance versus `SPY` is exploratory rather than out-of-sample evidence.
 - The transformer actor-critic is trained offline from those benchmark outputs, so it should be treated as a research model rather than a production trading signal.
+- The desktop app is an inference and replay surface, not a training interface.
+- A saved checkpoint can only be used with the ticker universe it was trained on; cross-universe inference is intentionally rejected.
 - The project avoids lookahead bias in the benchmark layer by training only on data known at each rebalance date.
 - Ledoit-Wolf remains the recommended default covariance estimator for the classical benchmark layer.
-- The ML model depends on PyTorch, while the rest of the classical stack does not.
+- The ML model depends on PyTorch, while the desktop app adds PySide6 on top of that.
 - The promoted larger default model was selected because it materially improved realized excess return on the denser weekly offline sample and cleared a one-sided `p < 0.05` test versus the `SPY` benchmark on the train, validation, and full splits in the current run.
 - The current ML defaults intentionally use weekly demonstrations to increase both the train and validation sample sizes materially; this is a data-density change, not a claim that weekly trading is inherently superior.
 

@@ -109,6 +109,17 @@ class RLTrainingResult:
     tickers: list[str]
 
 
+@dataclass(slots=True)
+class LoadedPolicyCheckpoint:
+    """Loaded actor-critic checkpoint ready for inference."""
+
+    path: Path
+    model: "CrossAssetAttentionActorCritic"
+    tickers: list[str]
+    training_config: RLTrainingConfig
+    device: torch.device
+
+
 def load_weight_histories_from_suite(
     suite_root: str | Path,
     objectives: Sequence[str],
@@ -314,6 +325,91 @@ def _predict_policy_actions(
             _, policy_mean, _ = model.policy_distribution(batch_states)
             outputs.append(policy_mean.cpu().numpy())
     return np.concatenate(outputs, axis=0)
+
+
+def _training_config_from_dict(raw_config: dict[str, object] | None) -> RLTrainingConfig:
+    """Hydrate a training config from a serialized checkpoint payload."""
+    if not raw_config:
+        return RLTrainingConfig()
+    return RLTrainingConfig(**raw_config)
+
+
+def load_actor_critic_checkpoint(
+    checkpoint_path: str | Path,
+    *,
+    device: str | torch.device | None = None,
+) -> LoadedPolicyCheckpoint:
+    """Load a serialized actor-critic checkpoint for deterministic inference."""
+    path = Path(checkpoint_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint file not found: {path}")
+
+    target_device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    payload = torch.load(path, map_location=target_device)
+    tickers = list(payload.get("tickers", []))
+    if not tickers:
+        raise ValueError(f"Checkpoint {path} does not contain any ticker metadata.")
+
+    training_config = _training_config_from_dict(payload.get("training_config"))
+    model = CrossAssetAttentionActorCritic(
+        num_assets=len(tickers),
+        lookback_window=training_config.lookback_window,
+        feature_dim=3,
+        hidden_dim=training_config.hidden_dim,
+        attention_heads=training_config.attention_heads,
+        attention_layers=training_config.attention_layers,
+        dropout=training_config.dropout,
+    ).to(target_device)
+    state_dict = payload.get("state_dict")
+    if not isinstance(state_dict, dict):
+        raise ValueError(f"Checkpoint {path} does not contain a valid model state dict.")
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    return LoadedPolicyCheckpoint(
+        path=path,
+        model=model,
+        tickers=tickers,
+        training_config=training_config,
+        device=target_device,
+    )
+
+
+def build_policy_state(
+    returns_window: pd.DataFrame,
+    *,
+    tickers: Sequence[str],
+    lookback_window: int,
+) -> np.ndarray:
+    """Build a single policy state tensor from a trailing return window."""
+    ordered_window = returns_window.reindex(columns=list(tickers))
+    if ordered_window.isna().any().any():
+        raise ValueError("Return window contains missing values after ticker alignment.")
+    if len(ordered_window) != lookback_window:
+        raise ValueError(
+            f"Expected a return window with {lookback_window} rows but received {len(ordered_window)}."
+        )
+    return _state_features(ordered_window)
+
+
+def predict_policy_weights(
+    checkpoint: LoadedPolicyCheckpoint,
+    returns_window: pd.DataFrame,
+) -> pd.Series:
+    """Predict deterministic portfolio weights from a trailing return window."""
+    state = build_policy_state(
+        returns_window,
+        tickers=checkpoint.tickers,
+        lookback_window=checkpoint.training_config.lookback_window,
+    )
+    batch = torch.as_tensor(state[None, ...], dtype=torch.float32, device=checkpoint.device)
+    checkpoint.model.eval()
+    with torch.no_grad():
+        _, policy_mean, _ = checkpoint.model.policy_distribution(batch)
+    weights = policy_mean.squeeze(0).detach().cpu().numpy()
+    series = pd.Series(weights, index=checkpoint.tickers, name="policy_weight")
+    series.index.name = "Ticker"
+    return series
 
 
 def _one_sided_greater_test(values: np.ndarray) -> tuple[float, float]:

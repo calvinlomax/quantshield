@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quantshield"
 version = "0.1.0"
-description = "Transformer actor-critic portfolio policy project built on locally fetched yfinance data and constrained benchmark demonstrations."
+description = "Transformer actor-critic portfolio policy project with a PySide6 desktop inference app, built on locally fetched yfinance data and constrained benchmark demonstrations."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -26,7 +26,14 @@ dependencies = [
 dev = [
   "pytest>=8.0"
 ]
+desktop = [
+  "PySide6>=6.8"
+]
 rl = [
+  "torch>=2.5"
+]
+app = [
+  "PySide6>=6.8",
   "torch>=2.5"
 ]
 
