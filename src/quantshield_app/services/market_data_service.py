@@ -9,6 +9,7 @@ import pandas as pd
 
 from quantshield.data_loader import MarketDataLoader
 from quantshield.preprocessing import clean_price_data, compute_returns
+from quantshield_app.services.checkpoint_service import is_placeholder_ticker
 
 
 @dataclass(slots=True)
@@ -44,15 +45,24 @@ class MarketDataService:
         """Download or load cached market data with enough history for the policy lookback."""
         if not portfolio_tickers:
             raise ValueError("At least one portfolio ticker is required.")
+        normalized_portfolio = [ticker.strip().upper() for ticker in portfolio_tickers if ticker.strip()]
+        normalized_benchmark = benchmark_ticker.strip().upper()
+        placeholder_tickers = [ticker for ticker in [*normalized_portfolio, normalized_benchmark] if is_placeholder_ticker(ticker)]
+        if placeholder_tickers:
+            joined = ", ".join(sorted(set(placeholder_tickers)))
+            raise ValueError(
+                "Synthetic checkpoint asset slots cannot be downloaded from yfinance. "
+                f"Select real ticker symbols instead of: {joined}"
+            )
         start_timestamp = pd.Timestamp(start_date)
         end_timestamp = pd.Timestamp(end_date) if end_date else None
         if end_timestamp is not None and end_timestamp < start_timestamp:
             raise ValueError("End date must be on or after the start date.")
 
         buffered_start = (start_timestamp - pd.tseries.offsets.BDay(max(lookback_window * 4, 252))).date().isoformat()
-        fetch_tickers = list(portfolio_tickers)
-        if benchmark_ticker not in fetch_tickers:
-            fetch_tickers.append(benchmark_ticker)
+        fetch_tickers = list(normalized_portfolio)
+        if normalized_benchmark not in fetch_tickers:
+            fetch_tickers.append(normalized_benchmark)
 
         raw_prices = self.loader.fetch_prices(
             fetch_tickers,
@@ -66,8 +76,8 @@ class MarketDataService:
         replay_returns = returns.loc[start_timestamp:end_timestamp]
         if replay_returns.empty:
             raise ValueError("No replay return data is available for the requested date range.")
-        if benchmark_ticker not in replay_returns.columns:
-            raise ValueError(f"Benchmark ticker '{benchmark_ticker}' is not available in the replay data.")
+        if normalized_benchmark not in replay_returns.columns:
+            raise ValueError(f"Benchmark ticker '{normalized_benchmark}' is not available in the replay data.")
         if len(returns.loc[: replay_returns.index[0]]) < lookback_window:
             raise ValueError(
                 "Not enough pre-start history is available to build the model lookback window for the selected start date."
@@ -76,8 +86,8 @@ class MarketDataService:
             prices=prices,
             returns=returns,
             replay_returns=replay_returns,
-            portfolio_tickers=list(portfolio_tickers),
-            benchmark_ticker=benchmark_ticker,
+            portfolio_tickers=normalized_portfolio,
+            benchmark_ticker=normalized_benchmark,
             start_date=start_timestamp,
             end_date=end_timestamp,
         )

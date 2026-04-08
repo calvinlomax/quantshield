@@ -4,7 +4,7 @@ QuantShield Summary Report
 Universe: VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV
 Sample window: 2015-01-02 to 2026-04-07
 Lookback window: 252 trading days
-Rebalance frequency: W-FRI
+Rebalance frequency: B
 Covariance estimator: ledoit_wolf
 Optimization objective: equal_weight
 Latest constraint check: no violations reported
@@ -24,9 +24,9 @@ Final weights:
 Performance summary:
               annualized_return  annualized_volatility  sharpe_ratio  sortino_ratio  max_drawdown  calmar_ratio
 Portfolio                                                                                                      
-portfolio                0.1295                 0.1615        0.8020         0.9799       -0.3061        0.4232
-equal_weight             0.1295                 0.1615        0.8020         0.9799       -0.3061        0.4232
-benchmark                0.1327                 0.1794        0.7400         0.8986       -0.3372        0.3936
+portfolio                0.1300                 0.1615        0.8045         0.9831       -0.3061        0.4246
+equal_weight             0.1300                 0.1615        0.8045         0.9831       -0.3061        0.4246
+benchmark                0.1329                 0.1793        0.7410         0.8999       -0.3372        0.3942
 
 Average turnover: 0.0000
 Herfindahl index: 0.1000
@@ -36,8 +36,8 @@ Risk attribution summary:
         weight  component_risk  percentage_risk
 Ticker                                         
 QQQ     0.1000          0.0203           0.1269
-VUG     0.1000          0.0200           0.1253
-VTI     0.1000          0.0175           0.1094
+VUG     0.1000          0.0200           0.1252
+VTI     0.1000          0.0174           0.1093
 SPY     0.1000          0.0174           0.1093
 IVV     0.1000          0.0168           0.1053
 

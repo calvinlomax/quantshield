@@ -4,17 +4,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Iterable
 
 import torch
 
 from quantshield.rl import LoadedPolicyCheckpoint, load_actor_critic_checkpoint
+from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE
 
 DEFAULT_CHECKPOINT_ROOTS = (
     "outputs/rl_policy",
     "outputs/ml_tuned_objective_runs",
     "outputs",
 )
+PLACEHOLDER_TICKER_PATTERN = re.compile(r"^ASSET_\d+$")
+
+
+def is_placeholder_ticker(ticker: str) -> bool:
+    """Return True when a ticker is a synthetic asset-slot label."""
+    return bool(PLACEHOLDER_TICKER_PATTERN.fullmatch(ticker.strip().upper()))
 
 
 @dataclass(slots=True)
@@ -29,8 +37,20 @@ class CheckpointDescriptor:
     attention_layers: int
 
     @property
+    def uses_placeholder_tickers(self) -> bool:
+        return bool(self.tickers) and all(is_placeholder_ticker(ticker) for ticker in self.tickers)
+
+    @property
+    def inference_default_tickers(self) -> list[str]:
+        return list(CANONICAL_TOP_ETF_UNIVERSE) if self.uses_placeholder_tickers else list(self.tickers)
+
+    @property
     def display_name(self) -> str:
-        tickers = ",".join(self.tickers)
+        tickers = (
+            f"synthetic-{len(self.tickers)}-slot-policy"
+            if self.uses_placeholder_tickers
+            else ",".join(self.tickers)
+        )
         return (
             f"{self.path.as_posix()} | {tickers} | "
             f"lb={self.lookback_window} hd={self.hidden_dim} "
@@ -84,7 +104,7 @@ class CheckpointService:
             path=Path(checkpoint_path),
             tickers=tickers,
             lookback_window=int(training_config.get("lookback_window", 63)),
-            hidden_dim=int(training_config.get("hidden_dim", 192)),
-            attention_heads=int(training_config.get("attention_heads", 6)),
+            hidden_dim=int(training_config.get("hidden_dim", 240)),
+            attention_heads=int(training_config.get("attention_heads", 8)),
             attention_layers=int(training_config.get("attention_layers", 4)),
         )

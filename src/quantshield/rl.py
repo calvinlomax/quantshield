@@ -49,14 +49,14 @@ class RLTrainingConfig:
     """Configuration for offline actor-critic training."""
 
     lookback_window: int = 63
-    hidden_dim: int = 192
-    attention_heads: int = 6
+    hidden_dim: int = 240
+    attention_heads: int = 8
     attention_layers: int = 4
     dropout: float = 0.10
     learning_rate: float = 1e-3
     weight_decay: float = 1e-5
     batch_size: int = 128
-    epochs: int = 120
+    epochs: int = 180
     actor_bc_weight: float = 5.0
     entropy_weight: float = 1e-3
     validation_fraction: float = 0.20
@@ -180,9 +180,12 @@ def build_offline_rl_dataset(
             action = _normalize_simplex(aligned_history.loc[rebalance_date].to_numpy(dtype=np.float32))
             raw_reward = _segment_cumulative_return(segment.to_numpy(dtype=np.float32), action)
 
-            if benchmark_ticker not in returns.columns:
-                raise ValueError(f"Benchmark ticker '{benchmark_ticker}' is not available in the return panel.")
-            benchmark_segment = returns.iloc[start_idx : end_idx + 1][benchmark_ticker].to_numpy(dtype=np.float32)
+            if benchmark_ticker == "__equal_weight__":
+                benchmark_segment = segment.to_numpy(dtype=np.float32).mean(axis=1)
+            else:
+                if benchmark_ticker not in returns.columns:
+                    raise ValueError(f"Benchmark ticker '{benchmark_ticker}' is not available in the return panel.")
+                benchmark_segment = returns.iloc[start_idx : end_idx + 1][benchmark_ticker].to_numpy(dtype=np.float32)
             benchmark_reward = float(np.prod(1.0 + benchmark_segment) - 1.0)
             excess_reward = raw_reward - benchmark_reward
 

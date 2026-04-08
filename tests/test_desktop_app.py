@@ -7,6 +7,7 @@ import pytest
 
 from quantshield.data_loader import MarketDataLoader
 from quantshield_app.services import CheckpointService, MarketDataService, TickerSearchService, parse_ticker_input
+from quantshield_app.services.checkpoint_service import is_placeholder_ticker
 from quantshield_app.services.replay_service import ReplayFrame, ReplayService
 from quantshield_app.viewmodels import ReplayController
 
@@ -115,6 +116,20 @@ def test_prepare_market_data_builds_replay_returns(tmp_path) -> None:
     assert prepared.replay_returns.index.min() >= pd.Timestamp("2023-07-03")
 
 
+def test_prepare_market_data_rejects_placeholder_tickers(tmp_path) -> None:
+    loader = MarketDataLoader(cache_dir=tmp_path / "raw", provider=_mock_price_download)
+    service = MarketDataService(loader)
+
+    with pytest.raises(ValueError, match="Synthetic checkpoint asset slots cannot be downloaded"):
+        service.prepare_market_data(
+            portfolio_tickers=["ASSET_01", "ASSET_02", "ASSET_03", "ASSET_04", "ASSET_05"],
+            benchmark_ticker="SPY",
+            start_date="2023-07-03",
+            end_date="2023-12-29",
+            lookback_window=63,
+        )
+
+
 def test_checkpoint_service_discovers_and_loads_checkpoint(tmp_path) -> None:
     checkpoint_dir = tmp_path / "outputs" / "rl_policy"
     checkpoint_dir.mkdir(parents=True)
@@ -154,6 +169,39 @@ def test_checkpoint_service_discovers_and_loads_checkpoint(tmp_path) -> None:
     loaded = service.load_checkpoint(checkpoint_path, device="cpu")
     assert loaded.tickers == tickers
     assert loaded.training_config.attention_layers == 1
+
+
+def test_checkpoint_descriptor_marks_placeholder_slots(tmp_path) -> None:
+    checkpoint_dir = tmp_path / "outputs" / "rl_policy"
+    checkpoint_dir.mkdir(parents=True)
+    tickers = [f"ASSET_{index:02d}" for index in range(1, 11)]
+    config = RLTrainingConfig()
+    model = CrossAssetAttentionActorCritic(
+        num_assets=len(tickers),
+        lookback_window=config.lookback_window,
+        feature_dim=3,
+        hidden_dim=config.hidden_dim,
+        attention_heads=config.attention_heads,
+        attention_layers=config.attention_layers,
+        dropout=config.dropout,
+    )
+    checkpoint_path = checkpoint_dir / "actor_critic_policy.pt"
+    torch.save(
+        {
+            "tickers": tickers,
+            "training_config": asdict(config),
+            "state_dict": model.state_dict(),
+        },
+        checkpoint_path,
+    )
+
+    service = CheckpointService(search_roots=[checkpoint_dir])
+    descriptor = service.discover_checkpoints()[0]
+
+    assert descriptor.uses_placeholder_tickers is True
+    assert descriptor.inference_default_tickers[0] == "VOO"
+    assert "synthetic-10-slot-policy" in descriptor.display_name
+    assert is_placeholder_ticker("ASSET_07") is True
 
 
 def test_replay_service_validates_minimum_ticker_count() -> None:

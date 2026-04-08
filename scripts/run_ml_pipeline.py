@@ -34,7 +34,7 @@ except ImportError as exc:  # pragma: no cover - depends on optional torch insta
 
 DEFAULT_OBJECTIVES = list(TUNED_PRESETS.keys())
 DEFAULT_SUITE_ROOT = "outputs/ml_tuned_objective_runs"
-DEFAULT_SUITE_REBALANCE_FREQUENCY = "W-FRI"
+DEFAULT_SUITE_REBALANCE_FREQUENCY = "B"
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,10 +64,10 @@ def parse_args() -> argparse.Namespace:
         help="Objectives to include as offline demonstrations.",
     )
     parser.add_argument("--lookback-window", type=int, default=63, help="Trailing return window used to build states.")
-    parser.add_argument("--epochs", type=int, default=120, help="Number of training epochs.")
+    parser.add_argument("--epochs", type=int, default=180, help="Number of training epochs.")
     parser.add_argument("--batch-size", type=int, default=128, help="Mini-batch size.")
-    parser.add_argument("--hidden-dim", type=int, default=192, help="Transformer hidden dimension.")
-    parser.add_argument("--attention-heads", type=int, default=6, help="Number of cross-asset attention heads.")
+    parser.add_argument("--hidden-dim", type=int, default=240, help="Transformer hidden dimension.")
+    parser.add_argument("--attention-heads", type=int, default=8, help="Number of cross-asset attention heads.")
     parser.add_argument("--attention-layers", type=int, default=4, help="Number of stacked cross-asset attention layers.")
     parser.add_argument("--device", help="Optional torch device override, for example cpu or cuda.")
     parser.add_argument("--skip-suite", action="store_true", help="Reuse existing tuned-suite artifacts instead of regenerating them.")

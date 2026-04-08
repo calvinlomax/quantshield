@@ -43,7 +43,7 @@ from quantshield_app.viewmodels import ReplayController
 
 
 DEFAULT_START_DATE = QDate(2018, 1, 1)
-DEFAULT_REBALANCE_FREQUENCIES = ["W-FRI", "W-MON", "M"]
+DEFAULT_REBALANCE_FREQUENCIES = ["B", "W-FRI", "W-MON", "M"]
 PLAYBACK_SPEEDS_MS: dict[str, int] = {
     "0.5x": 500,
     "1x": 250,
@@ -277,10 +277,10 @@ class QuantShieldMainWindow(QMainWindow):
 
         self.rebalance_combo = QComboBox(group)
         self.rebalance_combo.addItems(DEFAULT_REBALANCE_FREQUENCIES)
-        self.rebalance_combo.setCurrentText("W-FRI")
+        self.rebalance_combo.setCurrentText("B")
 
         self.benchmark_combo = QComboBox(group)
-        self.benchmark_combo.setEditable(True)
+        self.benchmark_combo.setEditable(False)
         self.benchmark_combo.addItems(list(CANONICAL_TOP_ETF_UNIVERSE))
         self.benchmark_combo.setCurrentText("SPY")
 
@@ -424,17 +424,18 @@ class QuantShieldMainWindow(QMainWindow):
 
     def _apply_descriptor(self, descriptor: CheckpointDescriptor) -> None:
         self._current_descriptor = descriptor
-        default_tickers = descriptor.tickers if len(descriptor.tickers) >= 5 else list(CANONICAL_TOP_ETF_UNIVERSE)
+        default_tickers = descriptor.inference_default_tickers if len(descriptor.inference_default_tickers) >= 5 else list(CANONICAL_TOP_ETF_UNIVERSE)
         self._set_selected_tickers(default_tickers)
 
-        benchmark_options = [descriptor.tickers[0], *[ticker for ticker in descriptor.tickers[1:] if ticker != descriptor.tickers[0]]]
-        if "SPY" not in benchmark_options:
-            benchmark_options.insert(0, "SPY")
+        benchmark_options = list(CANONICAL_TOP_ETF_UNIVERSE)
         self.benchmark_combo.blockSignals(True)
         self.benchmark_combo.clear()
         self.benchmark_combo.addItems(benchmark_options)
-        self.benchmark_combo.setCurrentText("SPY" if "SPY" in benchmark_options else benchmark_options[0])
+        self.benchmark_combo.setCurrentText("SPY")
         self.benchmark_combo.blockSignals(False)
+        self.reset_tickers_button.setText(
+            "Reset To Default Universe" if descriptor.uses_placeholder_tickers else "Reset To Model Universe"
+        )
 
     def _set_selected_tickers(self, tickers: list[str]) -> None:
         self.selected_tickers_list.clear()
@@ -462,8 +463,12 @@ class QuantShieldMainWindow(QMainWindow):
     def _reset_to_model_universe(self) -> None:
         if self._current_descriptor is None:
             return
-        self._set_selected_tickers(self._current_descriptor.tickers)
-        self.status_bar.showMessage("Reset portfolio tickers to the checkpoint training universe.")
+        reset_tickers = self._current_descriptor.inference_default_tickers
+        self._set_selected_tickers(reset_tickers)
+        if self._current_descriptor.uses_placeholder_tickers:
+            self.status_bar.showMessage("Reset portfolio tickers to the default real-ticker inference universe.")
+        else:
+            self.status_bar.showMessage("Reset portfolio tickers to the checkpoint training universe.")
 
     def _set_playback_enabled(self, enabled: bool) -> None:
         for widget in [

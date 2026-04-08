@@ -4,47 +4,47 @@ QuantShield Summary Report
 Universe: VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV
 Sample window: 2015-01-02 to 2026-04-07
 Lookback window: 252 trading days
-Rebalance frequency: W-FRI
+Rebalance frequency: B
 Covariance estimator: ledoit_wolf
 Optimization objective: mean_variance
 Latest constraint check: no violations reported
 
 Final weights:
-  QQQ: 20.00%
-  VEA: 20.00%
-  VUG: 20.00%
-  GLD: 20.00%
-  IEFA: 20.00%
+  QQQ: 25.00%
+  GLD: 25.00%
+  IEFA: 25.00%
+  VEA: 25.00%
+  VTI: 0.00%
   SPY: 0.00%
   VOO: 0.00%
   IVV: 0.00%
-  VTI: 0.00%
+  VUG: 0.00%
   VTV: 0.00%
 
 Performance summary:
               annualized_return  annualized_volatility  sharpe_ratio  sortino_ratio  max_drawdown  calmar_ratio
 Portfolio                                                                                                      
-portfolio                0.1334                 0.1621        0.8229         1.0143       -0.2720        0.4902
-equal_weight             0.1295                 0.1615        0.8020         0.9799       -0.3061        0.4232
-benchmark                0.1327                 0.1794        0.7400         0.8986       -0.3372        0.3936
+portfolio                0.1398                 0.1604        0.8714         1.0747       -0.2575        0.5427
+equal_weight             0.1300                 0.1615        0.8045         0.9831       -0.3061        0.4246
+benchmark                0.1329                 0.1793        0.7410         0.8999       -0.3372        0.3942
 
-Average turnover: 0.0801
-Herfindahl index: 0.2000
-Top weight share: 0.2000
+Average turnover: 0.0680
+Herfindahl index: 0.2500
+Top weight share: 0.2500
 
 Risk attribution summary:
         weight  component_risk  percentage_risk
 Ticker                                         
-QQQ     0.2000          0.0377           0.2295
-VUG     0.2000          0.0369           0.2251
-VEA     0.2000          0.0314           0.1915
-IEFA    0.2000          0.0309           0.1884
-GLD     0.2000          0.0272           0.1656
+QQQ     0.2500          0.0423           0.2609
+GLD     0.2500          0.0416           0.2568
+VEA     0.2500          0.0395           0.2437
+IEFA    0.2500          0.0387           0.2386
+VTI     0.0000          0.0000           0.0000
 
 Stress test summary:
                            stressed_return  stressed_volatility largest_loss_contributor  largest_loss_contribution                                                                           notes
 Scenario                                                                                                                                                                                           
-equity_market_shock                -0.1600                  NaN                      QQQ                    -0.0400                                     Custom return shock applied asset by asset.
+equity_market_shock                -0.1500                  NaN                      QQQ                    -0.0500                                     Custom return shock applied asset by asset.
 interest_rate_shock_proxy           0.0000                  NaN                      VOO                     0.0000                                     Custom return shock applied asset by asset.
-correlation_spike                      NaN               0.2437                      GLD                     0.0608  Returns are unchanged in this scenario; only portfolio volatility is stressed.
-single_asset_crash                 -0.0600                  NaN                      QQQ                    -0.0600                                     Custom return shock applied asset by asset.
+correlation_spike                      NaN               0.2420                      GLD                     0.0773  Returns are unchanged in this scenario; only portfolio volatility is stressed.
+single_asset_crash                 -0.0750                  NaN                      QQQ                    -0.0750                                     Custom return shock applied asset by asset.

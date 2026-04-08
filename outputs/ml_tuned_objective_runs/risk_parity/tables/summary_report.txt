@@ -4,47 +4,47 @@ QuantShield Summary Report
 Universe: VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV
 Sample window: 2015-01-02 to 2026-04-07
 Lookback window: 252 trading days
-Rebalance frequency: W-FRI
+Rebalance frequency: B
 Covariance estimator: ledoit_wolf
 Optimization objective: risk_parity
 Latest constraint check: no violations reported
 
 Final weights:
-  GLD: 14.49%
+  GLD: 14.48%
   VTV: 12.38%
-  IEFA: 10.15%
-  VEA: 10.04%
+  IEFA: 10.14%
+  VEA: 10.03%
   VOO: 9.53%
-  IVV: 9.41%
-  SPY: 9.08%
-  VTI: 9.06%
+  IVV: 9.42%
+  SPY: 9.09%
+  VTI: 9.07%
   VUG: 8.00%
-  QQQ: 7.86%
+  QQQ: 7.87%
 
 Performance summary:
               annualized_return  annualized_volatility  sharpe_ratio  sortino_ratio  max_drawdown  calmar_ratio
 Portfolio                                                                                                      
-portfolio                0.1291                 0.1462        0.8832         1.0812       -0.2799        0.4611
-equal_weight             0.1295                 0.1615        0.8020         0.9799       -0.3061        0.4232
-benchmark                0.1327                 0.1794        0.7400         0.8986       -0.3372        0.3936
+portfolio                0.1285                 0.1412        0.9101         1.1223       -0.2648        0.4851
+equal_weight             0.1300                 0.1615        0.8045         0.9831       -0.3061        0.4246
+benchmark                0.1329                 0.1793        0.7410         0.8999       -0.3372        0.3942
 
-Average turnover: 0.0020
+Average turnover: 0.0009
 Herfindahl index: 0.1037
-Top weight share: 0.1449
+Top weight share: 0.1448
 
 Risk attribution summary:
         weight  component_risk  percentage_risk
 Ticker                                         
-GLD     0.1449          0.0154           0.1001
-IEFA    0.1015          0.0154           0.1000
-VEA     0.1004          0.0154           0.1000
+VEA     0.1003          0.0154           0.1001
+IEFA    0.1014          0.0154           0.1001
+QQQ     0.0787          0.0154           0.1000
+SPY     0.0909          0.0154           0.1000
 VUG     0.0800          0.0154           0.1000
-QQQ     0.0786          0.0154           0.1000
 
 Stress test summary:
                            stressed_return  stressed_volatility largest_loss_contributor  largest_loss_contribution                                                                           notes
 Scenario                                                                                                                                                                                           
 equity_market_shock                -0.1710                  NaN                      VTV                    -0.0248                                     Custom return shock applied asset by asset.
 interest_rate_shock_proxy           0.0000                  NaN                      VOO                     0.0000                                     Custom return shock applied asset by asset.
-correlation_spike                      NaN               0.2242                      GLD                     0.0436  Returns are unchanged in this scenario; only portfolio volatility is stressed.
-single_asset_crash                 -0.0435                  NaN                      GLD                    -0.0435                                     Custom return shock applied asset by asset.
+correlation_spike                      NaN               0.2241                      GLD                     0.0436  Returns are unchanged in this scenario; only portfolio volatility is stressed.
+single_asset_crash                 -0.0434                  NaN                      GLD                    -0.0434                                     Custom return shock applied asset by asset.
