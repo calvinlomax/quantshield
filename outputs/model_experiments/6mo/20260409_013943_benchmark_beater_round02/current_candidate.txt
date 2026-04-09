@@ -1,1 +1,1 @@
-portfolio_oracle_top2_192x6x4
+portfolio_oracle_blend_224x8x4
