@@ -44,6 +44,8 @@ def test_build_offline_rl_dataset_shapes() -> None:
     assert dataset.states.shape[1:] == (3, 20, 3)
     assert dataset.actions.shape[1] == 3
     assert len(dataset.metadata) == len(dataset.states)
+    assert len(dataset.equal_weight_rewards) == len(dataset.states)
+    assert len(dataset.restricted_random_rewards) == len(dataset.states)
 
 
 def test_actor_outputs_simplex_weights() -> None:
@@ -102,9 +104,14 @@ def test_training_produces_benchmark_summary(tmp_path) -> None:
         result.benchmark_summary.columns
     )
     assert list(result.benchmark_summary.index) == ["train", "validation", "all"]
+    assert result.selected_epoch >= 1
+    assert "selected_checkpoint" in result.history.columns
+    assert result.history["selected_checkpoint"].sum() == 1
+    assert "composite_score" in result.model_score_summary.columns
 
     artifact_paths = save_actor_critic_artifacts(result, tmp_path / "rl_artifacts")
     assert artifact_paths["training_diagnostics_fig"].exists()
     assert artifact_paths["benchmark_comparison_fig"].exists()
     assert artifact_paths["policy_cumulative_returns_fig"].exists()
     assert artifact_paths["latest_policy_weights_fig"].exists()
+    assert artifact_paths["model_score_summary"].exists()

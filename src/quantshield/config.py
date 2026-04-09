@@ -64,7 +64,7 @@ class BacktestConfig:
     lookback_days: int = 252
     expanding_window: bool = False
     min_history_days: int = 126
-    rebalance_frequency: str = "M"
+    rebalance_frequency: str = "ME"
     benchmark_ticker: str = "SPY"
 
 

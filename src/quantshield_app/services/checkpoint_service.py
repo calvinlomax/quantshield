@@ -3,21 +3,55 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import re
 from typing import Iterable
 
+import pandas as pd
 import torch
 
+from quantshield.replay_durations import DEFAULT_REPLAY_DURATION_KEY, REPLAY_DURATION_PROFILES, checkpoint_root_for_duration
 from quantshield.rl import LoadedPolicyCheckpoint, load_actor_critic_checkpoint
 from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE
 
 DEFAULT_CHECKPOINT_ROOTS = (
+    *(profile.checkpoint_root for profile in REPLAY_DURATION_PROFILES),
+    "outputs/model_experiments",
+    "outputs/portfolio_model_fits",
     "outputs/rl_policy",
-    "outputs/ml_tuned_objective_runs",
-    "outputs",
 )
 PLACEHOLDER_TICKER_PATTERN = re.compile(r"^ASSET_\d+$")
+SELECTED_CANDIDATE_PATTERN = re.compile(r"^Selected candidate:\s+(.+)$", re.MULTILINE)
+SELECTED_EPOCH_PATTERN = re.compile(r"^Selected epoch:\s+(\d+)$", re.MULTILINE)
+
+DURATION_FOCUS_LABELS = {
+    "1mo": "Tactical 1-Month",
+    "3mo": "Short-Horizon 3-Month",
+    "6mo": "Intermediate 6-Month",
+    "1y": "Core 1-Year",
+    "3y": "Long-Horizon 3-Year",
+    "5y": "Strategic 5-Year",
+}
+
+CANDIDATE_DISPLAY_LABELS = {
+    "balanced_192x6x4": "Balanced",
+    "deeper_224x8x5": "Deep",
+    "wider_256x8x4": "Wide",
+    "regularized_256x8x5": "Regularized",
+    "base_user_shape": "Baseline",
+    "portfolio_balanced_192x6x4": "Balanced",
+    "portfolio_wide_256x8x4": "Wide",
+    "portfolio_deep_224x8x5": "Deep",
+    "portfolio_regularized_256x8x5": "Regularized",
+    "portfolio_oracle_single_160x4x3": "Oracle Single",
+    "portfolio_oracle_top2_192x6x4": "Oracle Top-2",
+    "portfolio_oracle_blend_224x8x4": "Oracle Blend",
+    "portfolio_oracle_memory_best_asset": "Oracle Memory",
+    "portfolio_oracle_memory_best_asset_anchor": "Oracle Memory+",
+    "portfolio_experimental_320x10x6": "Experimental",
+    "portfolio_titan_448x14x7": "Titan",
+}
 
 
 def is_placeholder_ticker(ticker: str) -> bool:
@@ -35,6 +69,14 @@ class CheckpointDescriptor:
     hidden_dim: int
     attention_heads: int
     attention_layers: int
+    duration_key: str | None = None
+    candidate_name: str | None = None
+    selected_epoch: int | None = None
+    validation_significant: bool | None = None
+    validation_mean_excess_return: float | None = None
+    all_significant: bool | None = None
+    all_mean_excess_return: float | None = None
+    all_t_statistic: float | None = None
 
     @property
     def uses_placeholder_tickers(self) -> bool:
@@ -46,29 +88,130 @@ class CheckpointDescriptor:
 
     @property
     def display_name(self) -> str:
-        tickers = (
-            f"synthetic-{len(self.tickers)}-slot-policy"
+        focus = DURATION_FOCUS_LABELS.get(self.duration_key or "", "Custom Horizon")
+        candidate = CANDIDATE_DISPLAY_LABELS.get(self.candidate_name or "", "General")
+        quality = "Validated" if self.validation_significant else ("Benchmark+" if self.all_significant else "Exploratory")
+        return f"{focus} {candidate} ({quality})"
+
+    @property
+    def quality_tag(self) -> str:
+        if self.validation_significant:
+            return "Validated"
+        if self.all_significant:
+            return "Benchmark+"
+        return "Exploratory"
+
+    @property
+    def source_label(self) -> str:
+        if "portfolio_model_fits" in self.path.parts:
+            return "Portfolio Fit"
+        if "candidate_models" in self.path.parts:
+            return "Candidate"
+        if "replay_checkpoint_suites" in self.path.parts:
+            return "Built-in"
+        return "Custom"
+
+    @property
+    def model_type_label(self) -> str:
+        if "portfolio_model_fits" in self.path.parts:
+            return "Fit Model"
+        if "candidate_models" in self.path.parts:
+            return "Candidate Model"
+        if "replay_checkpoint_suites" in self.path.parts:
+            return "Core Model"
+        return "Custom Horizon"
+
+    @property
+    def model_group_label(self) -> str:
+        return "Core Models" if self.source_label in {"Built-in", "Candidate"} else "Custom Horizon Models"
+
+    @property
+    def variant_label(self) -> str:
+        return CANDIDATE_DISPLAY_LABELS.get(self.candidate_name or "", self.candidate_name or "General")
+
+    @property
+    def depth_label(self) -> str:
+        return f"{self.hidden_dim}d / {self.attention_heads}h / {self.attention_layers}l"
+
+    @property
+    def updated_at(self) -> datetime:
+        return datetime.fromtimestamp(self.path.stat().st_mtime)
+
+    @property
+    def updated_label(self) -> str:
+        return self.updated_at.strftime("%Y-%m-%d")
+
+    @property
+    def data_window_label(self) -> str:
+        if self.duration_key is None:
+            return "Custom"
+        return DURATION_FOCUS_LABELS.get(self.duration_key, self.duration_key)
+
+    @property
+    def preview_policy_predictions_path(self) -> Path:
+        return self.path.parent / "policy_predictions.csv"
+
+    @property
+    def display_subtitle(self) -> str:
+        ticker_scope = (
+            f"synthetic {len(self.tickers)}-slot inference"
             if self.uses_placeholder_tickers
-            else ",".join(self.tickers)
+            else f"{len(self.tickers)}-ticker policy"
+        )
+        excess = (
+            f" | excess {self.all_mean_excess_return:.3%} | t={self.all_t_statistic:.2f}"
+            if self.all_mean_excess_return is not None and self.all_t_statistic is not None
+            else ""
         )
         return (
-            f"{self.path.as_posix()} | {tickers} | "
-            f"lb={self.lookback_window} hd={self.hidden_dim} "
-            f"h={self.attention_heads} l={self.attention_layers}"
+            f"{ticker_scope} | lb {self.lookback_window} | {self.hidden_dim}d/{self.attention_heads}h/{self.attention_layers}l"
+            f"{excess}"
         )
+
+    @property
+    def detail_text(self) -> str:
+        tickers = ", ".join(self.inference_default_tickers)
+        lines = [
+            f"Name: {self.display_name}",
+            f"Group: {self.model_group_label}",
+            f"Type: {self.model_type_label}",
+            f"Variant: {self.variant_label}",
+            f"Tag: {self.quality_tag}",
+            f"Scope: {self.display_subtitle}",
+            f"Training horizon: {self.duration_key or 'custom'}",
+            f"Selected epoch: {self.selected_epoch if self.selected_epoch is not None else 'unknown'}",
+            f"Updated: {self.updated_label}",
+            f"Tickers: {tickers}",
+            f"Lookback window: {self.lookback_window}",
+            f"Transformer: hidden={self.hidden_dim}, heads={self.attention_heads}, layers={self.attention_layers}",
+            f"Validation significant: {self.validation_significant if self.validation_significant is not None else 'unknown'}",
+            f"Validation mean excess: {self.validation_mean_excess_return:.4%}" if self.validation_mean_excess_return is not None else "Validation mean excess: unknown",
+            f"All-sample significant: {self.all_significant if self.all_significant is not None else 'unknown'}",
+            f"All-sample mean excess: {self.all_mean_excess_return:.4%}" if self.all_mean_excess_return is not None else "All-sample mean excess: unknown",
+            f"All-sample t-statistic: {self.all_t_statistic:.3f}" if self.all_t_statistic is not None else "All-sample t-statistic: unknown",
+            f"Path: {self.path.as_posix()}",
+        ]
+        return "\n".join(lines)
 
 
 class CheckpointService:
     """Discover and load saved actor-critic checkpoints."""
 
     def __init__(self, search_roots: Iterable[str | Path] = DEFAULT_CHECKPOINT_ROOTS) -> None:
-        self.search_roots = [Path(root) for root in search_roots]
+        materialized_roots = tuple(search_roots)
+        self.search_roots = [Path(root) for root in materialized_roots]
+        self._uses_default_roots = materialized_roots == DEFAULT_CHECKPOINT_ROOTS
 
-    def discover_checkpoints(self) -> list[CheckpointDescriptor]:
+    def discover_checkpoints(self, *, duration_key: str | None = None) -> list[CheckpointDescriptor]:
         """Return sorted checkpoint descriptors for known model files."""
+        preferred_duration = duration_key or DEFAULT_REPLAY_DURATION_KEY
+        preferred_root = checkpoint_root_for_duration(preferred_duration)
+        roots = list(self.search_roots)
+        if preferred_root in roots:
+            roots = [preferred_root, *[root for root in roots if root != preferred_root]]
         candidates: list[Path] = []
         seen: set[Path] = set()
-        for root in self.search_roots:
+        for root in roots:
             if not root.exists():
                 continue
             for path in root.rglob("actor_critic_policy.pt"):
@@ -83,7 +226,9 @@ class CheckpointService:
 
         descriptors.sort(
             key=lambda descriptor: (
-                0 if descriptor.path.as_posix().startswith("outputs/rl_policy") else 1,
+                0 if descriptor.duration_key == preferred_duration else 1,
+                0 if descriptor.source_label == "Built-in" else (1 if descriptor.source_label == "Candidate" else 2),
+                0 if descriptor.path.as_posix().startswith(preferred_root.as_posix()) else 1,
                 descriptor.path.as_posix(),
             )
         )
@@ -95,16 +240,99 @@ class CheckpointService:
 
     def _read_descriptor(self, checkpoint_path: str | Path) -> CheckpointDescriptor:
         """Read metadata from a serialized checkpoint without instantiating the UI."""
-        payload = torch.load(Path(checkpoint_path), map_location="cpu")
+        path = Path(checkpoint_path)
+        payload = torch.load(path, map_location="cpu", weights_only=False)
         tickers = list(payload.get("tickers", []))
         if not tickers:
             raise ValueError(f"Checkpoint {checkpoint_path} does not include ticker metadata.")
         training_config = dict(payload.get("training_config", {}))
+        duration_key = (
+            payload.get("duration_key")
+            or next((profile.key for profile in REPLAY_DURATION_PROFILES if profile.key in path.parts), None)
+        )
+        metadata = self._read_metadata_files(path.parent)
         return CheckpointDescriptor(
-            path=Path(checkpoint_path),
+            path=path,
             tickers=tickers,
             lookback_window=int(training_config.get("lookback_window", 63)),
             hidden_dim=int(training_config.get("hidden_dim", 240)),
             attention_heads=int(training_config.get("attention_heads", 8)),
             attention_layers=int(training_config.get("attention_layers", 4)),
+            duration_key=duration_key,
+            candidate_name=metadata["candidate_name"],
+            selected_epoch=metadata["selected_epoch"],
+            validation_significant=metadata["validation_significant"],
+            validation_mean_excess_return=metadata["validation_mean_excess_return"],
+            all_significant=metadata["all_significant"],
+            all_mean_excess_return=metadata["all_mean_excess_return"],
+            all_t_statistic=metadata["all_t_statistic"],
         )
+
+    @staticmethod
+    def _read_metadata_files(directory: Path) -> dict[str, object | None]:
+        metadata: dict[str, object | None] = {
+            "candidate_name": None,
+            "selected_epoch": None,
+            "validation_significant": None,
+            "validation_mean_excess_return": None,
+            "all_significant": None,
+            "all_mean_excess_return": None,
+            "all_t_statistic": None,
+        }
+
+        for summary_path in (
+            directory / "random_sp500_training_summary.txt",
+            directory / "portfolio_fit_summary.txt",
+        ):
+            if not summary_path.exists():
+                continue
+            summary_text = summary_path.read_text(encoding="utf-8")
+            candidate_match = SELECTED_CANDIDATE_PATTERN.search(summary_text)
+            epoch_match = SELECTED_EPOCH_PATTERN.search(summary_text)
+            if candidate_match is not None:
+                metadata["candidate_name"] = candidate_match.group(1).strip()
+            if epoch_match is not None:
+                metadata["selected_epoch"] = int(epoch_match.group(1))
+
+        fit_metadata_path = directory / "fit_metadata.csv"
+        if fit_metadata_path.exists():
+            fit_metadata = pd.read_csv(fit_metadata_path)
+            if not fit_metadata.empty:
+                row = fit_metadata.iloc[0]
+                if metadata["candidate_name"] is None and not pd.isna(row.get("selected_candidate")):
+                    metadata["candidate_name"] = str(row["selected_candidate"]).strip()
+                if metadata["selected_epoch"] is None and not pd.isna(row.get("selected_epoch")):
+                    metadata["selected_epoch"] = int(row["selected_epoch"])
+
+        benchmark_path = directory / "benchmark_summary.csv"
+        if benchmark_path.exists():
+            benchmark = pd.read_csv(benchmark_path).set_index("Split")
+            if "validation" in benchmark.index:
+                validation_row = benchmark.loc["validation"]
+                metadata["validation_significant"] = CheckpointService._coerce_optional_bool(
+                    validation_row.get("significant_outperformance")
+                )
+                metadata["validation_mean_excess_return"] = CheckpointService._coerce_optional_float(
+                    validation_row.get("policy_mean_excess_return")
+                )
+            if "all" in benchmark.index:
+                all_row = benchmark.loc["all"]
+                metadata["all_significant"] = CheckpointService._coerce_optional_bool(all_row.get("significant_outperformance"))
+                metadata["all_mean_excess_return"] = CheckpointService._coerce_optional_float(
+                    all_row.get("policy_mean_excess_return")
+                )
+                metadata["all_t_statistic"] = CheckpointService._coerce_optional_float(all_row.get("t_statistic"))
+
+        return metadata
+
+    @staticmethod
+    def _coerce_optional_bool(value: object) -> bool | None:
+        if pd.isna(value):
+            return None
+        return bool(value)
+
+    @staticmethod
+    def _coerce_optional_float(value: object) -> float | None:
+        if pd.isna(value):
+            return None
+        return float(value)

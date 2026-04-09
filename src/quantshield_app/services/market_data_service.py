@@ -42,7 +42,7 @@ class MarketDataService:
         return_type: str = "simple",
         force_refresh: bool = False,
     ) -> PreparedMarketData:
-        """Download or load cached market data with enough history for the policy lookback."""
+        """Download or load cached market data for the selected replay window."""
         if not portfolio_tickers:
             raise ValueError("At least one portfolio ticker is required.")
         normalized_portfolio = [ticker.strip().upper() for ticker in portfolio_tickers if ticker.strip()]
@@ -59,14 +59,13 @@ class MarketDataService:
         if end_timestamp is not None and end_timestamp < start_timestamp:
             raise ValueError("End date must be on or after the start date.")
 
-        buffered_start = (start_timestamp - pd.tseries.offsets.BDay(max(lookback_window * 4, 252))).date().isoformat()
         fetch_tickers = list(normalized_portfolio)
         if normalized_benchmark not in fetch_tickers:
             fetch_tickers.append(normalized_benchmark)
 
         raw_prices = self.loader.fetch_prices(
             fetch_tickers,
-            buffered_start,
+            start_timestamp.date().isoformat(),
             end_timestamp.date().isoformat() if end_timestamp is not None else None,
             use_cache=True,
             force_refresh=force_refresh,
@@ -78,10 +77,6 @@ class MarketDataService:
             raise ValueError("No replay return data is available for the requested date range.")
         if normalized_benchmark not in replay_returns.columns:
             raise ValueError(f"Benchmark ticker '{normalized_benchmark}' is not available in the replay data.")
-        if len(returns.loc[: replay_returns.index[0]]) < lookback_window:
-            raise ValueError(
-                "Not enough pre-start history is available to build the model lookback window for the selected start date."
-            )
         return PreparedMarketData(
             prices=prices,
             returns=returns,

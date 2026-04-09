@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
+import re
 from typing import Iterable
 
 import numpy as np
@@ -14,8 +16,15 @@ from quantshield.data_loader import MarketDataLoader
 from quantshield.optimization import optimize_portfolio
 from quantshield.preprocessing import clean_price_data, compute_returns
 from quantshield.risk import RiskConfig as EstimationRiskConfig, estimate_risk
-from quantshield.rl import OfflinePortfolioDataset, _state_features
+from quantshield.rl import (
+    OfflinePortfolioDataset,
+    _compose_training_reward,
+    _restricted_random_weights,
+    _stable_seed,
+    _state_features,
+)
 from quantshield.tuned_suite import TUNED_PRESETS
+from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE, SEARCH_SEED_TICKERS
 
 SP500_CONSTITUENTS_CSV_URL = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
 SP500_WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -33,10 +42,27 @@ class RandomSP500TrainingSpec:
     random_seed: int = 42
     rebalance_frequency: str = "W-FRI"
     lookback_window: int = 63
-    benchmark_mode: str = "__equal_weight__"
+    benchmark_mode: str = "__config__"
     batch_download_size: int = 40
     force_refresh: bool = False
-    objectives: tuple[str, ...] = ("mean_variance",)
+    objectives: tuple[str, ...] = tuple(TUNED_PRESETS.keys())
+    objective_suite_root: str = "outputs/ml_tuned_objective_runs"
+    prior_weight: float = 0.35
+    mixture_temperature: float = 0.18
+    restricted_random_min_weight: float = 0.0
+    restricted_random_max_weight: float = 0.35
+    reward_weight_raw: float = 0.10
+    reward_weight_vs_benchmark: float = 0.40
+    reward_weight_vs_equal_weight: float = 0.30
+    reward_weight_vs_restricted_random: float = 0.20
+
+
+@dataclass(slots=True)
+class ObjectiveRunPriors:
+    """Objective-run priors loaded from the saved tuned-suite artifacts."""
+
+    global_excess_scores: dict[str, float]
+    daily_excess_returns: dict[str, pd.Series]
 
 
 def fetch_sp500_constituents() -> list[str]:
@@ -44,7 +70,10 @@ def fetch_sp500_constituents() -> list[str]:
     try:
         table = pd.read_csv(SP500_CONSTITUENTS_CSV_URL)
     except Exception:
-        table = pd.read_html(SP500_WIKIPEDIA_URL, match="Symbol")[0]
+        try:
+            table = pd.read_html(SP500_WIKIPEDIA_URL, match="Symbol")[0]
+        except Exception:
+            return _cached_constituent_fallback()
 
     if "Symbol" not in table.columns:
         raise ValueError("The constituent source does not contain a Symbol column.")
@@ -59,6 +88,68 @@ def fetch_sp500_constituents() -> list[str]:
     if not deduped:
         raise ValueError("No S&P 500 symbols were parsed from the constituent source.")
     return deduped
+
+
+def _cached_constituent_fallback(cache_dir: str | Path = "data/raw") -> list[str]:
+    """Recover a broad ticker universe from locally cached price panels."""
+    root = Path(cache_dir)
+    candidate_symbols: set[str] = set()
+    excluded = {ticker.upper() for ticker in (*CANONICAL_TOP_ETF_UNIVERSE, *SEARCH_SEED_TICKERS)}
+    for path in root.glob("*.csv"):
+        if path.name.startswith("."):
+            continue
+        try:
+            columns = list(pd.read_csv(path, nrows=0).columns)
+        except Exception:
+            continue
+        if columns and columns[0] == "Date":
+            columns = columns[1:]
+        for column in columns:
+            symbol = str(column).strip().upper()
+            if not symbol:
+                continue
+            if symbol in excluded or symbol.startswith("ASSET_"):
+                continue
+            if re.fullmatch(r"\d+", symbol):
+                continue
+            candidate_symbols.add(symbol)
+    if len(candidate_symbols) < 50:
+        raise ValueError("Unable to recover a sufficiently broad local constituent universe.")
+    return sorted(candidate_symbols)
+
+
+def _cached_training_universe(
+    cache_dir: str | Path,
+    *,
+    start_date: str,
+    end_date: str | None,
+) -> list[str]:
+    """Return the largest cached ticker universe available for the requested date range."""
+    root = Path(cache_dir)
+    end_component = end_date or "latest"
+    excluded = {ticker.upper() for ticker in (*CANONICAL_TOP_ETF_UNIVERSE, *SEARCH_SEED_TICKERS)}
+    best_symbols: list[str] = []
+    pattern = f"*_{start_date}_{end_component}.csv"
+    for path in root.glob(pattern):
+        if path.name.startswith("."):
+            continue
+        try:
+            columns = list(pd.read_csv(path, nrows=0).columns)
+        except Exception:
+            continue
+        if columns and columns[0] == "Date":
+            columns = columns[1:]
+        symbols = [
+            str(column).strip().upper()
+            for column in columns
+            if str(column).strip()
+            and str(column).strip().upper() not in excluded
+            and not str(column).strip().upper().startswith("ASSET_")
+            and not re.fullmatch(r"\d+", str(column).strip().upper())
+        ]
+        if len(symbols) > len(best_symbols):
+            best_symbols = symbols
+    return sorted(best_symbols)
 
 
 def sample_random_universes(
@@ -142,6 +233,64 @@ def _rebalance_schedule(index: pd.DatetimeIndex, frequency: str) -> list[pd.Time
     return [pd.Timestamp(value) for value in schedule.tolist()]
 
 
+def load_objective_run_priors(
+    suite_root: str | Path,
+    objectives: Iterable[str],
+) -> ObjectiveRunPriors:
+    """Load global and daily excess-return priors from saved objective-suite outputs."""
+    root = Path(suite_root)
+    comparison_path = root / "tuned_objective_comparison.csv"
+    if not comparison_path.exists():
+        raise FileNotFoundError(f"Objective comparison table not found: {comparison_path}")
+
+    comparison = pd.read_csv(comparison_path, index_col=0)
+    global_scores = (
+        comparison.get("excess_return_vs_spy", pd.Series(dtype=float))
+        .reindex(list(objectives))
+        .fillna(0.0)
+        .astype(float)
+        .to_dict()
+    )
+
+    daily_excess_returns: dict[str, pd.Series] = {}
+    for objective in objectives:
+        comparison_returns_path = root / objective / "tables" / "comparison_returns.csv"
+        if not comparison_returns_path.exists():
+            raise FileNotFoundError(f"Objective comparison returns not found: {comparison_returns_path}")
+        frame = pd.read_csv(comparison_returns_path, parse_dates=["Date"])
+        frame["Date"] = pd.to_datetime(frame["Date"])
+        daily_excess = pd.Series(
+            frame["portfolio"].astype(float).to_numpy() - frame["benchmark"].astype(float).to_numpy(),
+            index=frame["Date"],
+            name="daily_excess_return",
+        ).sort_index()
+        daily_excess_returns[objective] = daily_excess
+
+    return ObjectiveRunPriors(
+        global_excess_scores=global_scores,
+        daily_excess_returns=daily_excess_returns,
+    )
+
+
+def _annualized_mean_return(series: pd.Series, periods_per_year: int) -> float:
+    if series.empty:
+        return 0.0
+    return float(series.mean()) * periods_per_year
+
+
+def _softmax_weights(values: dict[str, float], temperature: float) -> dict[str, float]:
+    keys = list(values)
+    if not keys:
+        return {}
+    vector = np.asarray([float(values[key]) for key in keys], dtype=np.float64)
+    vector = np.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0)
+    safe_temperature = max(float(temperature), 1e-3)
+    stabilized = (vector - vector.max()) / safe_temperature
+    exponentials = np.exp(stabilized)
+    weights = exponentials / np.clip(exponentials.sum(), 1e-12, None)
+    return {key: float(weight) for key, weight in zip(keys, weights, strict=True)}
+
+
 def combine_offline_datasets(datasets: list[OfflinePortfolioDataset]) -> OfflinePortfolioDataset:
     """Concatenate random-universe offline datasets into a single training panel."""
     if not datasets:
@@ -164,6 +313,8 @@ def combine_offline_datasets(datasets: list[OfflinePortfolioDataset]) -> Offline
         rewards=np.concatenate([dataset.rewards for dataset in datasets], axis=0),
         raw_rewards=np.concatenate([dataset.raw_rewards for dataset in datasets], axis=0),
         benchmark_rewards=np.concatenate([dataset.benchmark_rewards for dataset in datasets], axis=0),
+        equal_weight_rewards=np.concatenate([dataset.equal_weight_rewards for dataset in datasets], axis=0),
+        restricted_random_rewards=np.concatenate([dataset.restricted_random_rewards for dataset in datasets], axis=0),
         forward_segments=[segment for dataset in datasets for segment in dataset.forward_segments],
         metadata=metadata,
         tickers=[f"ASSET_{index + 1:02d}" for index in range(action_dim)],
@@ -172,15 +323,63 @@ def combine_offline_datasets(datasets: list[OfflinePortfolioDataset]) -> Offline
     )
 
 
+def _build_objective_weighted_target(
+    *,
+    objective_actions: dict[str, np.ndarray],
+    objective_excess_returns: dict[str, float],
+    priors: ObjectiveRunPriors,
+    forward_index: pd.DatetimeIndex,
+    periods_per_year: int,
+    prior_weight: float,
+    mixture_temperature: float,
+) -> tuple[np.ndarray, float, dict[str, float], dict[str, float]]:
+    """Blend objective actions into one target using suite priors and realized segment performance."""
+    objective_scores: dict[str, float] = {}
+    for objective, excess_return in objective_excess_returns.items():
+        prior_series = priors.daily_excess_returns.get(objective, pd.Series(dtype=float))
+        local_prior_score = _annualized_mean_return(prior_series.reindex(forward_index).dropna(), periods_per_year)
+        global_prior_score = float(priors.global_excess_scores.get(objective, 0.0))
+        realized_score = float(excess_return) * (periods_per_year / max(len(forward_index), 1))
+        objective_scores[objective] = (
+            float(prior_weight) * (0.5 * global_prior_score + 0.5 * local_prior_score)
+            + (1.0 - float(prior_weight)) * realized_score
+        )
+
+    mixture_weights = _softmax_weights(objective_scores, mixture_temperature)
+    first_action = next(iter(objective_actions.values()))
+    blended_action = np.zeros_like(first_action, dtype=np.float64)
+    weighted_reward = 0.0
+    for objective, action in objective_actions.items():
+        mixture_weight = float(mixture_weights[objective])
+        blended_action += mixture_weight * np.asarray(action, dtype=np.float64)
+        weighted_reward += mixture_weight * float(objective_excess_returns[objective])
+
+    blended_action = np.clip(blended_action, 1e-6, None)
+    blended_action = blended_action / np.clip(blended_action.sum(), 1e-6, None)
+    return blended_action.astype(np.float32), float(weighted_reward), objective_scores, mixture_weights
+
+
 def build_random_sp500_dataset(
     base_config: AppConfig,
     *,
     loader: MarketDataLoader | None = None,
     spec: RandomSP500TrainingSpec,
 ) -> tuple[OfflinePortfolioDataset, dict[str, object]]:
-    """Build a per-epoch offline dataset from random S&P 500 10-stock universes."""
+    """Build a randomized offline dataset from S&P 500 universes with objective-weighted targets."""
     loader = loader or MarketDataLoader(cache_dir=base_config.data.cache_dir)
-    constituents = fetch_sp500_constituents()
+    cached_constituents = _cached_training_universe(
+        base_config.data.cache_dir,
+        start_date=spec.start_date,
+        end_date=spec.end_date,
+    )
+    constituents = cached_constituents if len(cached_constituents) >= spec.candidate_pool_size else fetch_sp500_constituents()
+    priors = load_objective_run_priors(spec.objective_suite_root, spec.objectives)
+    benchmark_ticker = (
+        base_config.backtest.benchmark_ticker
+        if spec.benchmark_mode in {"__config__", "__market__"}
+        else spec.benchmark_mode
+    )
+    use_equal_weight_benchmark = benchmark_ticker == "__equal_weight__"
     candidate_pool, universes = sample_random_universes(
         constituents,
         candidate_pool_size=spec.candidate_pool_size,
@@ -190,7 +389,9 @@ def build_random_sp500_dataset(
     )
 
     rng = np.random.default_rng(spec.random_seed)
-    all_tickers = candidate_pool
+    all_tickers = list(candidate_pool)
+    if not use_equal_weight_benchmark and benchmark_ticker not in all_tickers:
+        all_tickers.append(benchmark_ticker)
     prices = fetch_price_panel(
         tickers=all_tickers,
         loader=loader,
@@ -205,6 +406,7 @@ def build_random_sp500_dataset(
         forward_fill=base_config.preprocessing.forward_fill_prices,
     )
     returns = compute_returns(clean_prices, return_type=base_config.preprocessing.return_type)
+    benchmark_returns = returns[benchmark_ticker] if not use_equal_weight_benchmark and benchmark_ticker in returns.columns else None
     schedule = _rebalance_schedule(returns.index, spec.rebalance_frequency)
     eligible_dates = [
         rebalance_date
@@ -219,12 +421,15 @@ def build_random_sp500_dataset(
     rewards: list[float] = []
     raw_rewards: list[float] = []
     benchmark_rewards: list[float] = []
+    equal_weight_rewards: list[float] = []
+    restricted_random_rewards: list[float] = []
     forward_segments: list[np.ndarray] = []
     universe_rows: list[dict[str, object]] = []
     metadata_rows: list[dict[str, object]] = []
     tickers = [f"ASSET_{index + 1:02d}" for index in range(spec.portfolio_size)]
 
     schedule_positions = {rebalance_date: position for position, rebalance_date in enumerate(schedule)}
+    periods_per_year = base_config.preprocessing.annualization_factor
 
     for universe_id, sampled_tickers in enumerate(universes):
         available_tickers = [ticker for ticker in sampled_tickers if ticker in returns.columns]
@@ -240,6 +445,27 @@ def build_random_sp500_dataset(
         forward_segment = universe_returns.loc[(universe_returns.index > rebalance_date) & (universe_returns.index <= next_rebalance_date)]
         if len(window) < spec.lookback_window or forward_segment.empty:
             continue
+
+        segment_array = forward_segment.to_numpy(dtype=np.float32)
+        equal_weight_segment = segment_array.mean(axis=1)
+        equal_weight_reward = float(np.prod(1.0 + equal_weight_segment) - 1.0)
+        if benchmark_returns is None:
+            benchmark_reward = equal_weight_reward
+        else:
+            benchmark_segment = benchmark_returns.loc[
+                (benchmark_returns.index > rebalance_date) & (benchmark_returns.index <= next_rebalance_date)
+            ].to_numpy(dtype=np.float32)
+            benchmark_reward = float(np.prod(1.0 + benchmark_segment) - 1.0) if len(benchmark_segment) else equal_weight_reward
+        restricted_random_action = _restricted_random_weights(
+            len(available_tickers),
+            seed=_stable_seed("restricted_random", universe_id, rebalance_date.isoformat(), next_rebalance_date.isoformat()),
+            min_weight=spec.restricted_random_min_weight,
+            max_weight=spec.restricted_random_max_weight,
+        )
+        restricted_random_reward = float(np.prod(1.0 + segment_array @ restricted_random_action) - 1.0)
+        objective_actions: dict[str, np.ndarray] = {}
+        objective_raw_rewards: dict[str, float] = {}
+        objective_excess_rewards: dict[str, float] = {}
 
         for objective in spec.objectives:
             config = _objective_config_for_universe(
@@ -266,31 +492,65 @@ def build_random_sp500_dataset(
             )
             action = optimization_result.weights.reindex(available_tickers).to_numpy(dtype=np.float32)
             action = action / np.clip(action.sum(), 1e-6, None)
-            segment_array = forward_segment.to_numpy(dtype=np.float32)
             raw_reward = float(np.prod(1.0 + segment_array @ action) - 1.0)
-            benchmark_segment = segment_array.mean(axis=1)
-            benchmark_reward = float(np.prod(1.0 + benchmark_segment) - 1.0)
             excess_reward = raw_reward - benchmark_reward
+            objective_actions[objective] = action
+            objective_raw_rewards[objective] = raw_reward
+            objective_excess_rewards[objective] = excess_reward
 
-            states.append(_state_features(window))
-            actions.append(action)
-            rewards.append(excess_reward)
-            raw_rewards.append(raw_reward)
-            benchmark_rewards.append(benchmark_reward)
-            forward_segments.append(segment_array)
-            metadata_rows.append(
-                {
-                    "objective": objective,
-                    "rebalance_date": rebalance_date,
-                    "forward_start": forward_segment.index[0],
-                    "forward_end": forward_segment.index[-1],
-                    "raw_reward": raw_reward,
-                    "benchmark_reward": benchmark_reward,
-                    "excess_reward": excess_reward,
-                    "universe_id": universe_id,
-                    "universe_tickers": ",".join(available_tickers),
-                }
-            )
+        blended_action, weighted_reward, objective_scores, mixture_weights = _build_objective_weighted_target(
+            objective_actions=objective_actions,
+            objective_excess_returns=objective_excess_rewards,
+            priors=priors,
+            forward_index=forward_segment.index,
+            periods_per_year=periods_per_year,
+            prior_weight=spec.prior_weight,
+            mixture_temperature=spec.mixture_temperature,
+        )
+        blended_raw_reward = float(np.prod(1.0 + segment_array @ blended_action) - 1.0)
+        blended_excess_reward = blended_raw_reward - benchmark_reward
+        composite_reward = _compose_training_reward(
+            blended_raw_reward,
+            benchmark_reward=benchmark_reward,
+            equal_weight_reward=equal_weight_reward,
+            restricted_random_reward=restricted_random_reward,
+            reward_weight_raw=spec.reward_weight_raw,
+            reward_weight_vs_benchmark=spec.reward_weight_vs_benchmark,
+            reward_weight_vs_equal_weight=spec.reward_weight_vs_equal_weight,
+            reward_weight_vs_restricted_random=spec.reward_weight_vs_restricted_random,
+        )
+        selected_objective = max(mixture_weights, key=mixture_weights.get)
+
+        states.append(_state_features(window))
+        actions.append(blended_action)
+        rewards.append(composite_reward)
+        raw_rewards.append(blended_raw_reward)
+        benchmark_rewards.append(benchmark_reward)
+        equal_weight_rewards.append(equal_weight_reward)
+        restricted_random_rewards.append(restricted_random_reward)
+        forward_segments.append(segment_array)
+        metadata_row = {
+            "objective": "objective_weighted_ensemble",
+            "selected_objective": selected_objective,
+            "rebalance_date": rebalance_date,
+            "forward_start": forward_segment.index[0],
+            "forward_end": forward_segment.index[-1],
+            "raw_reward": blended_raw_reward,
+            "benchmark_reward": benchmark_reward,
+            "equal_weight_reward": equal_weight_reward,
+            "restricted_random_reward": restricted_random_reward,
+            "excess_reward": blended_excess_reward,
+            "weighted_reward": weighted_reward,
+            "composite_reward": composite_reward,
+            "universe_id": universe_id,
+            "universe_tickers": ",".join(available_tickers),
+        }
+        for objective in spec.objectives:
+            metadata_row[f"objective_score_{objective}"] = float(objective_scores[objective])
+            metadata_row[f"objective_weight_{objective}"] = float(mixture_weights[objective])
+            metadata_row[f"objective_excess_{objective}"] = float(objective_excess_rewards[objective])
+            metadata_row[f"objective_raw_{objective}"] = float(objective_raw_rewards[objective])
+        metadata_rows.append(metadata_row)
 
         universe_rows.append(
             {
@@ -298,7 +558,11 @@ def build_random_sp500_dataset(
                 "tickers": ",".join(available_tickers),
                 "rebalance_date": rebalance_date,
                 "forward_end": next_rebalance_date,
-                "samples": len(spec.objectives),
+                "samples": 1,
+                "selected_objective": selected_objective,
+                "weighted_reward": weighted_reward,
+                "composite_reward": composite_reward,
+                "blended_excess_reward": blended_excess_reward,
             }
         )
 
@@ -311,6 +575,8 @@ def build_random_sp500_dataset(
         rewards=np.asarray(rewards, dtype=np.float32),
         raw_rewards=np.asarray(raw_rewards, dtype=np.float32),
         benchmark_rewards=np.asarray(benchmark_rewards, dtype=np.float32),
+        equal_weight_rewards=np.asarray(equal_weight_rewards, dtype=np.float32),
+        restricted_random_rewards=np.asarray(restricted_random_rewards, dtype=np.float32),
         forward_segments=forward_segments,
         metadata=pd.DataFrame(metadata_rows),
         tickers=tickers,

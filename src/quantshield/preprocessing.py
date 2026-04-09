@@ -50,8 +50,10 @@ def compute_returns(prices: pd.DataFrame, return_type: str = "simple") -> pd.Dat
     return returns
 
 
-def resample_prices(prices: pd.DataFrame, rule: str = "M", method: str = "last") -> pd.DataFrame:
+def resample_prices(prices: pd.DataFrame, rule: str = "ME", method: str = "last") -> pd.DataFrame:
     """Resample a price frame using a pandas aggregation rule."""
+    if str(rule).strip().upper() in {"M", "1M"}:
+        rule = "ME"
     resampler = prices.resample(rule)
     if method == "last":
         return resampler.last().dropna(how="all")

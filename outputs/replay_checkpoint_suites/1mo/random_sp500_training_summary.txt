@@ -1,0 +1,41 @@
+QuantShield Random S&P 500 Training Summary
+==========================================
+Candidate pool size: 80
+Duration profile: 1mo
+Random universes: 256
+Portfolio size: 10
+Lookback window: 5
+Rebalance frequency: W-FRI
+Objectives: min_variance, mean_variance, risk_parity, equal_weight
+Objective suite priors: outputs/ml_tuned_objective_runs
+Sampled ticker count: 80
+Selected candidate: balanced_192x6x4
+Selected epoch: 126
+
+Benchmark comparison:
+           samples benchmark_mean_raw_return policy_mean_raw_return policy_mean_excess_return t_statistic p_value significant_outperformance
+Split                                                                                                                                       
+train          204                    0.0032                 0.0041                    0.0009      2.8951  0.0021                       True
+validation      52                    0.0014                 0.0028                    0.0014      1.7021  0.0474                       True
+all            256                    0.0029                 0.0045                    0.0016      4.6401  0.0000                       True
+
+Candidate sweep:
+          candidate  hidden_dim  attention_heads  attention_layers  epochs  dropout  learning_rate  actor_bc_weight  selected_epoch  validation_significant  validation_mean_excess_return  validation_t_statistic  all_significant  all_mean_excess_return  all_t_statistic                                                             candidate_dir
+   balanced_192x6x4         192                6                 4     128 0.050000       0.000800         2.500000             126                    True                       0.001410                1.702083             True                0.001611         4.640064    outputs/replay_checkpoint_suites/1mo/candidate_models/balanced_192x6x4
+     deeper_224x8x5         224                8                 5     176 0.080000       0.000500         1.500000              77                   False                      -0.005177               -1.162637             True                0.000762         3.489371      outputs/replay_checkpoint_suites/1mo/candidate_models/deeper_224x8x5
+      wider_256x8x4         256                8                 4     160 0.080000       0.000600         1.750000              69                   False                       0.003296                1.003998             True                0.000740         3.850083       outputs/replay_checkpoint_suites/1mo/candidate_models/wider_256x8x4
+regularized_256x8x5         256                8                 5     192 0.100000       0.000400         1.250000             110                   False                      -0.005233               -1.164747            False                0.000744         0.917921 outputs/replay_checkpoint_suites/1mo/candidate_models/regularized_256x8x5
+    base_user_shape         224                8                 4     144 0.060000       0.000700         2.000000              22                    True                       0.000428                1.836743            False                0.000059         0.289392     outputs/replay_checkpoint_suites/1mo/candidate_models/base_user_shape
+
+Sample universes:
+ universe_id                                      tickers rebalance_date forward_end  samples selected_objective  weighted_reward  blended_excess_reward
+           0   CHD,FSLR,FTNT,HAS,HCA,NTAP,PH,SBAC,VRT,VTR     2021-10-01  2021-10-08        1       min_variance         0.012716               0.012707
+           1      CDNS,CHD,HAS,IBM,IQV,KKR,LH,OMC,SJM,TRV     2025-02-21  2025-02-28        1       min_variance         0.004697               0.004695
+           2 BKR,ETR,FITB,GOOG,INTC,KKR,PANW,SATS,TRV,USB     2024-07-19  2024-07-26        1      mean_variance         0.016133               0.016126
+           3    AWK,BF-B,BR,COR,FITB,HON,IBM,PAYX,PSA,TAP     2023-06-23  2023-06-30        1       equal_weight        -0.000998              -0.000996
+           4    BIIB,CARR,EXE,HCA,MSI,NI,NWSA,OKE,VTR,XYL     2023-06-16  2023-06-23        1      mean_variance         0.020721               0.020719
+           5   BIIB,CARR,CHD,FCX,MSI,NDAQ,NVR,SATS,VTR,WY     2025-07-25  2025-08-01        1       equal_weight        -0.001808              -0.001711
+           6    APP,BF-B,ETR,HAS,IBM,INTC,LH,PANW,PSX,TRV     2021-09-24  2021-10-01        1      mean_variance         0.023523               0.023521
+           7      AME,ETR,FCX,GPN,HSIC,LH,LLY,SJM,TAP,TMO     2024-10-04  2024-10-11        1       min_variance         0.001014               0.001015
+           8      BKR,EQIX,ESS,FSLR,NI,NVR,PH,RSG,VST,WFC     2022-04-22  2022-04-29        1        risk_parity        -0.001004              -0.000990
+           9   CPRT,EXE,FITB,FTNT,IBM,LH,SATS,VTR,WDC,WFC     2021-10-08  2021-10-15        1       min_variance         0.001559               0.001564

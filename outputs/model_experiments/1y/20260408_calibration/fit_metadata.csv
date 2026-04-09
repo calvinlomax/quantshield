@@ -1,0 +1,2 @@
+Index,name,duration_key,tickers,benchmark_ticker,rebalance_frequency,lookback_window,candidate_mode,selected_candidate,selected_epoch,model_path
+0,1y_calibration,1y,"['VOO', 'IVV', 'SPY', 'VTI', 'QQQ', 'VEA', 'VUG', 'GLD', 'IEFA', 'VTV']",SPY,2W-FRI,63,standard,portfolio_deep_224x8x5,35,outputs/model_experiments/1y/20260408_calibration/actor_critic_policy.pt

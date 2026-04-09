@@ -19,3 +19,4 @@ outputs/tables/*.txt
 outputs/ml_tuned_objective_runs/**
 outputs/tuned_objective_runs/**
 outputs/rl_policy/**
+outputs/app_state/**

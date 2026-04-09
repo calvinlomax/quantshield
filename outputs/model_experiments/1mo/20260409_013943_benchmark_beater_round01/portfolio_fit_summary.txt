@@ -1,0 +1,28 @@
+Portfolio Fit: 1mo_20260409_013943_benchmark_beater_round01
+Tickers: VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV
+Training horizon: 1mo
+Start date: 2018-01-01
+End date: 2026-04-08
+Benchmark: SPY
+Rebalance frequency: B
+Selected candidate: portfolio_oracle_top2_192x6x4
+Selected epoch: 13
+
+Composite model score:
+            benchmark_component  equal_weight_component  restricted_random_component  raw_return_component  significance_component  significance_bonus  weight_error_penalty  composite_score
+Split                                                                                                                                                                                        
+train                   -0.1569                  0.0104                       0.0119                0.4908                 -1.2375              0.0000                7.7080          -8.5893
+validation               0.9817                  0.3345                       0.2818                0.9469                 10.6176             10.0000                7.7916          15.3709
+all                      0.0709                  0.0752                       0.0659                0.5823                  4.9953              0.0000                7.7247          -1.9351
+
+Baseline ticker qualification:
+     split  beats_all_tickers  significant_vs_all_tickers  min_mean_excess_return  mean_mean_excess_return
+     train              False                       False               -0.000270                 0.000005
+validation              False                       False               -0.000742                 0.000167
+       all              False                       False               -0.000178                 0.000038
+
+Candidate sweep:
+                      candidate  selected_epoch  hidden_dim  attention_heads  attention_layers  epochs                                                                   objectives  samples  all_composite_score  validation_beats_all_tickers  validation_significant_vs_all_tickers  validation_min_mean_excess_return  all_beats_all_tickers  all_significant_vs_all_tickers  all_min_mean_excess_return                                                                                                                                                  candidate_dir
+  portfolio_oracle_top2_192x6x4              13         192                6                 4      56                       best_asset,best_asset_anchor,top2_blend,oracle_softmax     8280            -1.935128                         False                                  False                          -0.000742                  False                           False                   -0.000178   /Users/calvinlomax/Desktop/QuantShield/outputs/model_experiments/1mo/20260409_013943_benchmark_beater_round01/candidate_models/portfolio_oracle_top2_192x6x4
+portfolio_oracle_single_160x4x3               4         160                4                 3      48                               best_asset,best_asset_anchor,best_asset_mirror     6210            -0.973905                         False                                  False                          -0.000908                  False                           False                   -0.000213 /Users/calvinlomax/Desktop/QuantShield/outputs/model_experiments/1mo/20260409_013943_benchmark_beater_round01/candidate_models/portfolio_oracle_single_160x4x3
+ portfolio_oracle_blend_224x8x4              12         224                8                 4      64 best_asset,best_asset_anchor,top2_blend,oracle_softmax,forward_mean_variance    10350            -6.811614                         False                                  False                          -0.000909                  False                           False                   -0.000216  /Users/calvinlomax/Desktop/QuantShield/outputs/model_experiments/1mo/20260409_013943_benchmark_beater_round01/candidate_models/portfolio_oracle_blend_224x8x4

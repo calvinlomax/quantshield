@@ -1,0 +1,16 @@
+{
+  "lookback_window": 5,
+  "hidden_dim": 224,
+  "attention_heads": 8,
+  "attention_layers": 4,
+  "dropout": 0.05,
+  "learning_rate": 0.0007,
+  "weight_decay": 1.5e-05,
+  "batch_size": 64,
+  "epochs": 64,
+  "actor_bc_weight": 3.75,
+  "entropy_weight": 0.0002,
+  "validation_fraction": 0.2,
+  "gradient_clip_norm": 1.0,
+  "seed": 46
+}

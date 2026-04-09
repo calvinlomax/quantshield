@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable
+import numpy as np
 
 from quantshield.universe import SEARCH_SEED_TICKERS
 
@@ -27,6 +28,7 @@ class TickerSearchService:
 
     def __init__(self, seed_tickers: Iterable[str] = SEARCH_SEED_TICKERS) -> None:
         self.seed_tickers = [ticker.strip().upper() for ticker in seed_tickers if ticker.strip()]
+        self._random_universe_cache: list[str] | None = None
 
     def search(self, query: str, *, limit: int = 12) -> list[TickerSuggestion]:
         normalized = query.strip().upper()
@@ -70,3 +72,24 @@ class TickerSearchService:
         if not suggestions:
             add(normalized, "Manual symbol entry")
         return suggestions[:limit]
+
+    def random_portfolio(self, *, size: int = 10, seed: int | None = None) -> list[str]:
+        """Return a random portfolio of real tickers for fast experimentation."""
+        if size < 1:
+            raise ValueError("Random portfolio size must be positive.")
+
+        if self._random_universe_cache is None:
+            universe = list(self.seed_tickers)
+            try:
+                from quantshield.sp500_random_training import fetch_sp500_constituents
+
+                universe = fetch_sp500_constituents()
+            except Exception:
+                pass
+            self._random_universe_cache = [ticker.strip().upper() for ticker in universe if ticker.strip()]
+
+        universe = self._random_universe_cache
+        if len(universe) < size:
+            raise ValueError("Not enough tickers are available to build a random portfolio.")
+        rng = np.random.default_rng(seed)
+        return sorted(rng.choice(universe, size=size, replace=False).tolist())

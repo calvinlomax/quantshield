@@ -87,8 +87,12 @@ def main() -> None:
     print("Evaluation summary:")
     print(result.evaluation_summary.to_string(float_format=lambda value: f"{value:0.4f}"))
     print("")
+    print("Composite model score:")
+    print(result.model_score_summary.to_string(float_format=lambda value: f"{value:0.4f}"))
+    print("")
     print(f"Saved model checkpoint to {artifact_paths['model']}")
     print(f"Saved benchmark summary to {artifact_paths['benchmark_summary']}")
+    print(f"Saved model score summary to {artifact_paths['model_score_summary']}")
     print(f"Saved RL figures to {Path(artifact_paths['training_diagnostics_fig']).parent}")
 
 

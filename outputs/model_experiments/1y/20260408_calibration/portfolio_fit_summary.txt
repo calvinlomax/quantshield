@@ -1,0 +1,28 @@
+Portfolio Fit: 1y_calibration
+Tickers: VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV
+Training horizon: 1y
+Start date: 2018-01-01
+End date: 2026-04-08
+Benchmark: SPY
+Rebalance frequency: 2W-FRI
+Selected candidate: portfolio_deep_224x8x5
+Selected epoch: 35
+
+Composite model score:
+            benchmark_component  equal_weight_component  restricted_random_component  raw_return_component  significance_component  significance_bonus  weight_error_penalty  composite_score
+Split                                                                                                                                                                                        
+train                    2.2321                  2.6187                       1.9776                5.5578                 12.7749             10.0000               11.0315          24.1295
+validation               9.2198                  3.1618                       2.0451                6.9747                 11.7994             10.0000               10.8112          32.3896
+all                      3.6760                  2.7276                       1.9911                5.8750                 13.8846             10.0000               10.9874          27.1668
+
+Baseline ticker qualification:
+     split  beats_all_tickers  significant_vs_all_tickers  min_mean_excess_return  mean_mean_excess_return
+     train              False                       False               -0.001067                 0.001340
+validation              False                       False               -0.007122                 0.001614
+       all              False                       False               -0.000540                 0.001395
+
+Candidate sweep:
+                 candidate  selected_epoch  hidden_dim  attention_heads  attention_layers  epochs  all_composite_score  validation_beats_all_tickers  validation_significant_vs_all_tickers  validation_min_mean_excess_return  all_beats_all_tickers  all_significant_vs_all_tickers  all_min_mean_excess_return                                                                                 candidate_dir
+    portfolio_deep_224x8x5              35         224                8                 5      56            27.166845                         False                                  False                          -0.007122                  False                           False                   -0.000540     outputs/model_experiments/1y/20260408_calibration/candidate_models/portfolio_deep_224x8x5
+portfolio_balanced_192x6x4              19         192                6                 4      32            24.577678                         False                                  False                          -0.008406                  False                           False                   -0.001096 outputs/model_experiments/1y/20260408_calibration/candidate_models/portfolio_balanced_192x6x4
+    portfolio_wide_256x8x4              32         256                8                 4      44             4.564496                         False                                  False                          -0.008502                  False                           False                   -0.001857     outputs/model_experiments/1y/20260408_calibration/candidate_models/portfolio_wide_256x8x4

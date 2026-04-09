@@ -1,0 +1,6 @@
+Index,candidate,hidden_dim,attention_heads,attention_layers,epochs,dropout,learning_rate,actor_bc_weight,selected_epoch,validation_significant,validation_mean_excess_return,validation_t_statistic,all_significant,all_mean_excess_return,all_t_statistic,candidate_dir
+2,wider_256x8x4,256,8,4,160,0.08,0.0006,1.75,24,False,-0.006038318388164043,-0.7386978410717904,True,0.0016384427435696125,4.072082334433696,outputs/replay_checkpoint_suites/3y/candidate_models/wider_256x8x4
+0,balanced_192x6x4,192,6,4,128,0.05,0.0008,2.5,47,False,-0.005656138993799686,-0.664665926137576,True,0.0015444173477590084,5.143598950775604,outputs/replay_checkpoint_suites/3y/candidate_models/balanced_192x6x4
+1,base_user_shape,224,8,4,144,0.06,0.0007,2.0,23,False,-0.003317640395835042,-0.5255802240050474,True,0.0014530320186167955,2.550715636531779,outputs/replay_checkpoint_suites/3y/candidate_models/base_user_shape
+3,deeper_224x8x5,224,8,5,176,0.08,0.0005,1.5,22,False,-0.004283643793314695,-0.711809802439782,True,0.0012778174132108688,4.025426597546315,outputs/replay_checkpoint_suites/3y/candidate_models/deeper_224x8x5
+4,regularized_256x8x5,256,8,5,192,0.1,0.0004,1.25,63,False,-0.0005989086348563433,-0.06835336664193253,False,0.0011091786436736584,0.5272078596749212,outputs/replay_checkpoint_suites/3y/candidate_models/regularized_256x8x5

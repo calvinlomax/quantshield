@@ -88,6 +88,44 @@ class MarketDataLoader:
         prices.index.name = "Date"
         return prices
 
+    def load_cached_superset_prices(
+        self,
+        tickers: list[str],
+        start_date: str,
+        end_date: str | None = None,
+    ) -> pd.DataFrame | None:
+        """Return a cached subset when a larger matching panel already exists on disk."""
+        requested = [ticker.strip().upper() for ticker in tickers]
+        requested_start = pd.Timestamp(start_date)
+        requested_end = pd.Timestamp(end_date) if end_date is not None else None
+        best_match: pd.DataFrame | None = None
+        best_rank: tuple[int, int] | None = None
+        for candidate_path in self.cache_dir.glob("*.csv"):
+            try:
+                cached_prices = self.load_cached_prices(candidate_path)
+            except Exception:
+                continue
+            cached_columns = [str(column).strip().upper() for column in cached_prices.columns]
+            if not set(requested).issubset(cached_columns):
+                continue
+            if cached_prices.index.min() > requested_start:
+                continue
+            if requested_end is not None and cached_prices.index.max() < requested_end:
+                continue
+            subset = cached_prices.loc[cached_prices.index >= requested_start, requested]
+            if requested_end is not None:
+                subset = subset.loc[subset.index <= requested_end]
+            if subset.empty:
+                continue
+            extra_columns = len(cached_columns) - len(requested)
+            start_gap_days = abs((requested_start - cached_prices.index.min()).days)
+            rank = (extra_columns, start_gap_days)
+            if best_rank is not None and rank >= best_rank:
+                continue
+            best_match = subset
+            best_rank = rank
+        return best_match
+
     def fetch_prices(
         self,
         tickers: list[str],
@@ -104,6 +142,11 @@ class MarketDataLoader:
         cache_path = self.cache_path(tickers, start_date, end_date)
         if use_cache and cache_path.exists() and not force_refresh:
             return self.load_cached_prices(cache_path)
+        if use_cache and not force_refresh:
+            cached_superset = self.load_cached_superset_prices(tickers, start_date, end_date)
+            if cached_superset is not None:
+                cached_superset.to_csv(cache_path, index_label="Date")
+                return cached_superset
 
         raw = self.provider(
             tickers=tickers,

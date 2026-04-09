@@ -1,0 +1,45 @@
+QuantShield Random S&P 500 Training Summary
+==========================================
+Candidate pool size: 40
+Duration profile: 1y
+Random universes: 48
+Portfolio size: 10
+Lookback window: 63
+Rebalance frequency: W-FRI
+Objectives: min_variance, mean_variance, risk_parity, equal_weight
+Objective suite priors: outputs/ml_tuned_objective_runs
+Sampled ticker count: 40
+Selected candidate: experimental_320x10x6
+Selected epoch: 6
+
+Benchmark comparison:
+           samples benchmark_mean_raw_return equal_weight_mean_raw_return restricted_random_mean_raw_return policy_mean_raw_return policy_mean_excess_return policy_mean_excess_vs_equal_weight policy_mean_excess_vs_restricted_random t_statistic p_value significant_outperformance equal_weight_t_statistic equal_weight_p_value equal_weight_significant_outperformance restricted_random_t_statistic restricted_random_p_value restricted_random_significant_outperformance
+Split                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+train           38                    0.0014                       0.0022                            0.0012                 0.0024                    0.0009                             0.0001                                  0.0012      0.3058  0.3808                      False                   1.9778               0.0277                                    True                        0.7164                    0.2391                                        False
+validation      10                   -0.0006                      -0.0021                           -0.0029                -0.0021                   -0.0016                            -0.0000                                  0.0007     -0.2705  0.6036                      False                  -0.0677               0.5262                                   False                        0.3065                    0.3831                                        False
+all             48                    0.0010                       0.0013                            0.0004                 0.0014                    0.0004                             0.0001                                  0.0011      0.1529  0.4395                      False                   1.8489               0.0354                                    True                        0.7850                    0.2182                                        False
+
+Composite model score:
+            benchmark_component  equal_weight_component  restricted_random_component  raw_return_component  significance_component  significance_bonus  weight_error_penalty  composite_score
+Split                                                                                                                                                                                        
+train                    2.7636                  0.2998                       1.7182                2.3271                  4.8227              3.3333                2.9790          12.2858
+validation              -4.6496                 -0.0129                       1.1010               -2.1166                 -0.0529              0.0000                3.1585          -8.8894
+all                      1.2169                  0.2346                       1.5900                1.4193                  4.5016              3.3333                3.0164           9.2794
+
+Candidate sweep:
+            candidate  hidden_dim  attention_heads  attention_layers  epochs  dropout  learning_rate  actor_bc_weight  selected_epoch  validation_composite_score  all_composite_score  validation_significant  validation_mean_excess_return  validation_mean_excess_vs_equal_weight  validation_mean_excess_vs_restricted_random  validation_t_statistic  all_significant  all_mean_excess_return  all_mean_excess_vs_equal_weight  all_mean_excess_vs_restricted_random  all_t_statistic  all_mean_abs_weight_error                                                                             candidate_dir
+experimental_320x10x6         320               10                 6     128 0.100000       0.000350         1.100000               6                   -8.889411             9.279417                   False                      -0.001562                               -0.000006                                     0.000735               -0.270540            False                0.000406                         0.000117                              0.001064         0.152942                   0.050273 outputs/model_experiments/1y_experimental_20260408/candidate_models/experimental_320x10x6
+          xl_384x12x6         384               12                 6     144 0.120000       0.000300         1.000000             144                   39.296711           -57.473027                   False                       0.005741                                0.007297                                     0.008039                0.874347            False               -0.006569                        -0.006857                             -0.005910        -1.005807                   0.168308           outputs/model_experiments/1y_experimental_20260408/candidate_models/xl_384x12x6
+
+Sample universes:
+ universe_id                                      tickers rebalance_date forward_end  samples selected_objective  weighted_reward  composite_reward  blended_excess_reward
+           0 APTV,BRK-B,FDX,FTNT,GPN,JNJ,MAA,NDAQ,PGR,PSA     2021-12-17  2021-12-23        1       equal_weight        -0.007723         -0.002573              -0.007694
+           1    AME,ARES,CME,ITW,JNJ,OMC,PNR,PSA,SPGI,TXT     2025-03-14  2025-03-21        1      mean_variance         0.002508          0.001129               0.002511
+           2   ANET,APTV,ARES,CNP,GD,GPN,KMB,MCHP,RCL,SYY     2024-08-16  2024-08-23        1       equal_weight         0.000850          0.001837               0.000857
+           3    ANET,CMI,CRM,CVNA,EQR,GD,IBM,SPGI,TXT,UNH     2023-08-11  2023-08-18        1      mean_variance         0.002700         -0.000411               0.002711
+           4    ARES,FISV,GD,GIS,GPN,HUBB,JNJ,MKC,OMC,SYY     2023-07-28  2023-08-04        1       equal_weight         0.018698          0.005720               0.018699
+           5 BRK-B,GD,HUBB,IBM,KMB,MCHP,PSA,PSKY,SPGI,TXT     2025-08-08  2025-08-15        1       equal_weight         0.030058          0.017557               0.030062
+           6   APP,ARES,EQR,FDX,FTNT,HUBB,PSA,SJM,SYY,UNH     2021-12-10  2021-12-17        1       min_variance         0.029590          0.013885               0.029634
+           7 APP,APTV,BRK-B,CRM,FTNT,GIS,KMB,MKC,RCL,SPGI     2024-11-01  2024-11-08        1      mean_variance         0.233334          0.213064               0.233333
+           8   AME,FDX,FTNT,GIS,GPN,MCHP,MKC,NRG,SPGI,UNH     2022-06-24  2022-07-01        1       min_variance         0.037560          0.034579               0.037565
+           9  ANET,ARES,BRK-B,CME,CMI,EQR,GIS,MAA,MKC,SYY     2021-12-23  2021-12-31        1      mean_variance         0.014918          0.010142               0.014927

@@ -32,14 +32,48 @@ def normalize_datetime_index(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | 
     return result
 
 
-def get_rebalance_dates(index: pd.DatetimeIndex, frequency: str = "M") -> pd.DatetimeIndex:
-    """Return actual trading dates used as rebalance anchors."""
+def _normalize_schedule_frequency(frequency: str) -> str:
+    """Normalize legacy schedule aliases to pandas 3-compatible offsets."""
+    normalized = str(frequency).strip().upper()
+    if normalized in {"M", "1M"}:
+        return "ME"
+    return str(frequency).strip()
+
+
+def generate_schedule(index: pd.DatetimeIndex, frequency: str = "ME") -> pd.DatetimeIndex:
+    """Return actual trading dates used as rebalance anchors for common frequencies."""
     if index.empty:
         return pd.DatetimeIndex([])
     normalized = pd.DatetimeIndex(pd.to_datetime(index)).sort_values()
+    normalized = normalized.unique()
+    frequency = _normalize_schedule_frequency(frequency)
+
+    if frequency == "B":
+        return normalized
+    if frequency.endswith("B") and frequency[:-1].isdigit():
+        step = max(int(frequency[:-1]), 1)
+        return normalized[::step]
+
+    if frequency in {"W-FRI", "W-MON", "2W-FRI", "ME"}:
+        targets = pd.date_range(start=normalized[0], end=normalized[-1], freq=frequency)
+        scheduled: list[pd.Timestamp] = []
+        for target in targets:
+            position = normalized.searchsorted(target, side="right") - 1
+            if position < 0:
+                continue
+            candidate = pd.Timestamp(normalized[position])
+            if not scheduled or candidate > scheduled[-1]:
+                scheduled.append(candidate)
+        return pd.DatetimeIndex(scheduled)
+
     periods = pd.Series(normalized.to_period(frequency), index=normalized)
     mask = periods != periods.shift(-1)
     return normalized[mask.values]
+
+
+def get_rebalance_dates(index: pd.DatetimeIndex, frequency: str = "ME") -> pd.DatetimeIndex:
+    """Backward-compatible wrapper for rebalance anchors."""
+    return generate_schedule(index, frequency=frequency)
 
 
 def infer_periods_per_year(index: pd.DatetimeIndex | None = None, default: int = 252) -> int:

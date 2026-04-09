@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -16,6 +18,7 @@ import torch.nn.functional as F
 from torch.distributions import Dirichlet
 from torch.utils.data import DataLoader, TensorDataset
 
+from quantshield.model_scoring import build_model_score_summary
 from quantshield.plotting import (
     plot_rl_benchmark_comparison,
     plot_rl_latest_weights,
@@ -33,6 +36,92 @@ def _normalize_simplex(weights: np.ndarray, eps: float = 1e-6) -> np.ndarray:
 def _segment_cumulative_return(segment_returns: np.ndarray, weights: np.ndarray) -> float:
     daily_returns = segment_returns @ weights
     return float(np.prod(1.0 + daily_returns) - 1.0)
+
+
+def _stable_seed(*parts: object) -> int:
+    digest = hashlib.sha256("::".join(str(part) for part in parts).encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=False)
+
+
+def _restricted_random_weights(
+    num_assets: int,
+    *,
+    seed: int,
+    min_weight: float = 0.0,
+    max_weight: float = 0.35,
+    max_attempts: int = 1024,
+) -> np.ndarray:
+    if num_assets <= 0:
+        raise ValueError("Restricted random weights require at least one asset.")
+    if min_weight < 0.0:
+        raise ValueError("Restricted random minimum weight must be non-negative.")
+    if min_weight * num_assets > 1.0:
+        raise ValueError("Restricted random minimum weight is infeasible for the asset count.")
+    if max_weight < 1.0 / num_assets:
+        raise ValueError("Restricted random maximum weight is too small to produce a simplex allocation.")
+
+    rng = np.random.default_rng(seed)
+    base = np.full(num_assets, float(min_weight), dtype=np.float64)
+    remaining = max(1.0 - float(base.sum()), 0.0)
+    best_weights: np.ndarray | None = None
+    best_overflow = float("inf")
+    for _ in range(max_attempts):
+        sample = rng.dirichlet(np.ones(num_assets, dtype=np.float64))
+        candidate = base + remaining * sample
+        overflow = float(np.maximum(candidate - max_weight, 0.0).sum())
+        if overflow < best_overflow:
+            best_overflow = overflow
+            best_weights = candidate
+        if overflow <= 1e-9:
+            return candidate.astype(np.float32)
+
+    assert best_weights is not None
+    clipped = np.minimum(best_weights, max_weight)
+    deficit = 1.0 - float(clipped.sum())
+    if deficit > 0.0:
+        room = np.maximum(max_weight - clipped, 0.0)
+        room_sum = float(room.sum())
+        if room_sum > 0.0:
+            clipped += deficit * (room / room_sum)
+    clipped = np.clip(clipped, min_weight, max_weight)
+    clipped /= np.clip(clipped.sum(), 1e-9, None)
+    return clipped.astype(np.float32)
+
+
+def _compose_training_reward(
+    raw_reward: float,
+    *,
+    benchmark_reward: float,
+    equal_weight_reward: float,
+    restricted_random_reward: float,
+    reward_weight_raw: float = 0.10,
+    reward_weight_vs_benchmark: float = 0.40,
+    reward_weight_vs_equal_weight: float = 0.30,
+    reward_weight_vs_restricted_random: float = 0.20,
+) -> float:
+    weights = np.asarray(
+        [
+            float(reward_weight_raw),
+            float(reward_weight_vs_benchmark),
+            float(reward_weight_vs_equal_weight),
+            float(reward_weight_vs_restricted_random),
+        ],
+        dtype=np.float64,
+    )
+    total_weight = float(np.abs(weights).sum())
+    if total_weight <= 1e-12:
+        return float(raw_reward)
+    weights /= total_weight
+    reward_components = np.asarray(
+        [
+            float(raw_reward),
+            float(raw_reward - benchmark_reward),
+            float(raw_reward - equal_weight_reward),
+            float(raw_reward - restricted_random_reward),
+        ],
+        dtype=np.float64,
+    )
+    return float(weights @ reward_components)
 
 
 def _state_features(window: pd.DataFrame) -> np.ndarray:
@@ -73,6 +162,8 @@ class OfflinePortfolioDataset:
     rewards: np.ndarray
     raw_rewards: np.ndarray
     benchmark_rewards: np.ndarray
+    equal_weight_rewards: np.ndarray
+    restricted_random_rewards: np.ndarray
     forward_segments: list[np.ndarray]
     metadata: pd.DataFrame
     tickers: list[str]
@@ -87,6 +178,8 @@ class OfflinePortfolioDataset:
             rewards=self.rewards[subset_indices],
             raw_rewards=self.raw_rewards[subset_indices],
             benchmark_rewards=self.benchmark_rewards[subset_indices],
+            equal_weight_rewards=self.equal_weight_rewards[subset_indices],
+            restricted_random_rewards=self.restricted_random_rewards[subset_indices],
             forward_segments=[self.forward_segments[index] for index in subset_indices],
             metadata=self.metadata.iloc[subset_indices].reset_index(drop=True),
             tickers=self.tickers,
@@ -107,6 +200,8 @@ class RLTrainingResult:
     policy_predictions: pd.DataFrame
     latest_policy_weights: pd.Series
     tickers: list[str]
+    selected_epoch: int
+    model_score_summary: pd.DataFrame
 
 
 @dataclass(slots=True)
@@ -114,7 +209,7 @@ class LoadedPolicyCheckpoint:
     """Loaded actor-critic checkpoint ready for inference."""
 
     path: Path
-    model: "CrossAssetAttentionActorCritic"
+    model: nn.Module
     tickers: list[str]
     training_config: RLTrainingConfig
     device: torch.device
@@ -144,6 +239,12 @@ def build_offline_rl_dataset(
     *,
     lookback_window: int = 63,
     benchmark_ticker: str = "SPY",
+    restricted_random_min_weight: float = 0.0,
+    restricted_random_max_weight: float = 0.35,
+    reward_weight_raw: float = 0.10,
+    reward_weight_vs_benchmark: float = 0.40,
+    reward_weight_vs_equal_weight: float = 0.30,
+    reward_weight_vs_restricted_random: float = 0.20,
 ) -> OfflinePortfolioDataset:
     """Create an offline RL dataset from saved objective-suite weight histories."""
     if not weight_histories:
@@ -158,6 +259,8 @@ def build_offline_rl_dataset(
     rewards: list[float] = []
     raw_rewards: list[float] = []
     benchmark_rewards: list[float] = []
+    equal_weight_rewards: list[float] = []
+    restricted_random_rewards: list[float] = []
     forward_segments: list[np.ndarray] = []
 
     record_position = 0
@@ -179,21 +282,41 @@ def build_offline_rl_dataset(
 
             action = _normalize_simplex(aligned_history.loc[rebalance_date].to_numpy(dtype=np.float32))
             raw_reward = _segment_cumulative_return(segment.to_numpy(dtype=np.float32), action)
+            equal_weight_reward = float(np.prod(1.0 + segment.to_numpy(dtype=np.float32).mean(axis=1)) - 1.0)
 
             if benchmark_ticker == "__equal_weight__":
-                benchmark_segment = segment.to_numpy(dtype=np.float32).mean(axis=1)
+                benchmark_reward = equal_weight_reward
             else:
                 if benchmark_ticker not in returns.columns:
                     raise ValueError(f"Benchmark ticker '{benchmark_ticker}' is not available in the return panel.")
                 benchmark_segment = returns.iloc[start_idx : end_idx + 1][benchmark_ticker].to_numpy(dtype=np.float32)
-            benchmark_reward = float(np.prod(1.0 + benchmark_segment) - 1.0)
+                benchmark_reward = float(np.prod(1.0 + benchmark_segment) - 1.0)
+            restricted_random_action = _restricted_random_weights(
+                len(tickers),
+                seed=_stable_seed(objective, pd.Timestamp(rebalance_date).isoformat(), len(segment)),
+                min_weight=restricted_random_min_weight,
+                max_weight=restricted_random_max_weight,
+            )
+            restricted_random_reward = _segment_cumulative_return(segment.to_numpy(dtype=np.float32), restricted_random_action)
             excess_reward = raw_reward - benchmark_reward
+            composite_reward = _compose_training_reward(
+                raw_reward,
+                benchmark_reward=benchmark_reward,
+                equal_weight_reward=equal_weight_reward,
+                restricted_random_reward=restricted_random_reward,
+                reward_weight_raw=reward_weight_raw,
+                reward_weight_vs_benchmark=reward_weight_vs_benchmark,
+                reward_weight_vs_equal_weight=reward_weight_vs_equal_weight,
+                reward_weight_vs_restricted_random=reward_weight_vs_restricted_random,
+            )
 
             states.append(_state_features(window))
             actions.append(action.astype(np.float32))
-            rewards.append(float(excess_reward))
+            rewards.append(float(composite_reward))
             raw_rewards.append(float(raw_reward))
             benchmark_rewards.append(float(benchmark_reward))
+            equal_weight_rewards.append(float(equal_weight_reward))
+            restricted_random_rewards.append(float(restricted_random_reward))
             forward_segments.append(segment.to_numpy(dtype=np.float32))
             records.append(
                 {
@@ -204,7 +327,10 @@ def build_offline_rl_dataset(
                     "forward_end": segment.index[-1],
                     "raw_reward": raw_reward,
                     "benchmark_reward": benchmark_reward,
+                    "equal_weight_reward": equal_weight_reward,
+                    "restricted_random_reward": restricted_random_reward,
                     "excess_reward": excess_reward,
+                    "composite_reward": composite_reward,
                 }
             )
             record_position += 1
@@ -222,6 +348,8 @@ def build_offline_rl_dataset(
         rewards=np.asarray(rewards, dtype=np.float32)[order],
         raw_rewards=np.asarray(raw_rewards, dtype=np.float32)[order],
         benchmark_rewards=np.asarray(benchmark_rewards, dtype=np.float32)[order],
+        equal_weight_rewards=np.asarray(equal_weight_rewards, dtype=np.float32)[order],
+        restricted_random_rewards=np.asarray(restricted_random_rewards, dtype=np.float32)[order],
         forward_segments=[forward_segments[index] for index in order],
         metadata=metadata,
         tickers=tickers,
@@ -303,6 +431,69 @@ class CrossAssetAttentionActorCritic(nn.Module):
         return self.critic_head(critic_input).squeeze(-1)
 
 
+class NearestNeighborPolicy(nn.Module):
+    """Non-parametric policy that reuses the closest fitted state/action example."""
+
+    def __init__(self, stored_states: np.ndarray, stored_actions: np.ndarray) -> None:
+        super().__init__()
+        flattened_states = np.asarray(stored_states, dtype=np.float32)
+        if flattened_states.ndim != 4:
+            raise ValueError("Nearest-neighbor policy expects states with shape [samples, assets, lookback, features].")
+        action_array = np.asarray(stored_actions, dtype=np.float32)
+        if action_array.ndim != 2:
+            raise ValueError("Nearest-neighbor policy expects actions with shape [samples, assets].")
+        if len(flattened_states) != len(action_array):
+            raise ValueError("Nearest-neighbor policy requires the same number of states and actions.")
+        self.max_assets = int(flattened_states.shape[1])
+        self.lookback_window = int(flattened_states.shape[2])
+        self.feature_dim = int(flattened_states.shape[3])
+        self.register_buffer(
+            "stored_states",
+            torch.as_tensor(flattened_states.reshape(len(flattened_states), -1), dtype=torch.float32),
+        )
+        self.register_buffer("stored_actions", torch.as_tensor(action_array, dtype=torch.float32))
+
+    def _align_states(self, states: torch.Tensor) -> torch.Tensor:
+        if states.ndim != 4:
+            raise ValueError("Nearest-neighbor policy expects batched states with shape [batch, assets, lookback, features].")
+        batch_size, asset_count, lookback_window, feature_dim = states.shape
+        if lookback_window != self.lookback_window or feature_dim != self.feature_dim:
+            raise ValueError(
+                "Nearest-neighbor policy received an incompatible state tensor "
+                f"({asset_count} assets, lb={lookback_window}, feat={feature_dim}); "
+                f"expected lb={self.lookback_window}, feat={self.feature_dim}."
+            )
+        if asset_count < self.max_assets:
+            padding = torch.zeros(
+                batch_size,
+                self.max_assets - asset_count,
+                lookback_window,
+                feature_dim,
+                dtype=states.dtype,
+                device=states.device,
+            )
+            states = torch.cat([states, padding], dim=1)
+        elif asset_count > self.max_assets:
+            states = states[:, : self.max_assets]
+        return states
+
+    def policy_distribution(self, states: torch.Tensor) -> tuple[Dirichlet, torch.Tensor, torch.Tensor]:
+        aligned_states = self._align_states(states)
+        batch_size, asset_count = states.shape[:2]
+        flattened = aligned_states.reshape(len(aligned_states), -1)
+        distances = torch.cdist(flattened, self.stored_states)
+        nearest_indices = torch.argmin(distances, dim=1)
+        full_actions = self.stored_actions.index_select(0, nearest_indices)
+        policy_mean = full_actions[:, :asset_count]
+        policy_mean = policy_mean / torch.clamp(policy_mean.sum(dim=-1, keepdim=True), min=1e-6)
+        concentration = torch.clamp(policy_mean, min=1e-4) * 500.0 + 1.0
+        distribution = Dirichlet(concentration)
+        return distribution, policy_mean, policy_mean.unsqueeze(-1)
+
+    def q_values(self, context: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(len(actions), dtype=actions.dtype, device=actions.device)
+
+
 def _evaluate_policy_returns(
     actions: np.ndarray,
     forward_segments: Sequence[np.ndarray],
@@ -314,6 +505,39 @@ def _evaluate_policy_returns(
     )
     policy_excess_returns = raw_policy_returns - benchmark_rewards
     return raw_policy_returns, policy_excess_returns
+
+
+def _compose_reward_vector(
+    policy_raw_returns: np.ndarray,
+    *,
+    benchmark_rewards: np.ndarray,
+    equal_weight_rewards: np.ndarray,
+    restricted_random_rewards: np.ndarray,
+    reward_weight_raw: float = 0.10,
+    reward_weight_vs_benchmark: float = 0.40,
+    reward_weight_vs_equal_weight: float = 0.30,
+    reward_weight_vs_restricted_random: float = 0.20,
+) -> np.ndarray:
+    rewards = [
+        _compose_training_reward(
+            float(raw_return),
+            benchmark_reward=float(benchmark_reward),
+            equal_weight_reward=float(equal_weight_reward),
+            restricted_random_reward=float(restricted_random_reward),
+            reward_weight_raw=reward_weight_raw,
+            reward_weight_vs_benchmark=reward_weight_vs_benchmark,
+            reward_weight_vs_equal_weight=reward_weight_vs_equal_weight,
+            reward_weight_vs_restricted_random=reward_weight_vs_restricted_random,
+        )
+        for raw_return, benchmark_reward, equal_weight_reward, restricted_random_reward in zip(
+            policy_raw_returns,
+            benchmark_rewards,
+            equal_weight_rewards,
+            restricted_random_rewards,
+            strict=True,
+        )
+    ]
+    return np.asarray(rewards, dtype=np.float32)
 
 
 def _predict_policy_actions(
@@ -351,26 +575,34 @@ def load_actor_critic_checkpoint(
         raise FileNotFoundError(f"Checkpoint file not found: {path}")
 
     target_device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    payload = torch.load(path, map_location=target_device)
+    payload = torch.load(path, map_location=target_device, weights_only=False)
     tickers = list(payload.get("tickers", []))
     if not tickers:
         raise ValueError(f"Checkpoint {path} does not contain any ticker metadata.")
 
     training_config = _training_config_from_dict(payload.get("training_config"))
-    model = CrossAssetAttentionActorCritic(
-        num_assets=len(tickers),
-        lookback_window=training_config.lookback_window,
-        feature_dim=3,
-        hidden_dim=training_config.hidden_dim,
-        attention_heads=training_config.attention_heads,
-        attention_layers=training_config.attention_layers,
-        dropout=training_config.dropout,
-    ).to(target_device)
-    state_dict = payload.get("state_dict")
-    if not isinstance(state_dict, dict):
-        raise ValueError(f"Checkpoint {path} does not contain a valid model state dict.")
-    model.load_state_dict(state_dict)
-    model.eval()
+    if payload.get("policy_kind") == "nearest_neighbor":
+        stored_states = payload.get("nearest_neighbor_states")
+        stored_actions = payload.get("nearest_neighbor_actions")
+        if stored_states is None or stored_actions is None:
+            raise ValueError(f"Checkpoint {path} does not contain nearest-neighbor state/action payloads.")
+        model = NearestNeighborPolicy(stored_states, stored_actions).to(target_device)
+        model.eval()
+    else:
+        model = CrossAssetAttentionActorCritic(
+            num_assets=len(tickers),
+            lookback_window=training_config.lookback_window,
+            feature_dim=3,
+            hidden_dim=training_config.hidden_dim,
+            attention_heads=training_config.attention_heads,
+            attention_layers=training_config.attention_layers,
+            dropout=training_config.dropout,
+        ).to(target_device)
+        state_dict = payload.get("state_dict")
+        if not isinstance(state_dict, dict):
+            raise ValueError(f"Checkpoint {path} does not contain a valid model state dict.")
+        model.load_state_dict(state_dict)
+        model.eval()
 
     return LoadedPolicyCheckpoint(
         path=path,
@@ -435,34 +667,102 @@ def _build_benchmark_summary(
     train_policy_raw: np.ndarray,
     train_policy_excess: np.ndarray,
     train_benchmark_raw: np.ndarray,
+    train_equal_weight_raw: np.ndarray,
+    train_restricted_random_raw: np.ndarray,
     validation_policy_raw: np.ndarray,
     validation_policy_excess: np.ndarray,
     validation_benchmark_raw: np.ndarray,
+    validation_equal_weight_raw: np.ndarray,
+    validation_restricted_random_raw: np.ndarray,
     full_policy_raw: np.ndarray,
     full_policy_excess: np.ndarray,
     full_benchmark_raw: np.ndarray,
+    full_equal_weight_raw: np.ndarray,
+    full_restricted_random_raw: np.ndarray,
     alpha: float = 0.05,
 ) -> pd.DataFrame:
     """Summarize policy performance against the benchmark with significance tests."""
     rows: dict[str, dict[str, float | bool]] = {}
-    for split_name, policy_raw, policy_excess, benchmark_raw in [
-        ("train", train_policy_raw, train_policy_excess, train_benchmark_raw),
-        ("validation", validation_policy_raw, validation_policy_excess, validation_benchmark_raw),
-        ("all", full_policy_raw, full_policy_excess, full_benchmark_raw),
+    for split_name, policy_raw, policy_excess, benchmark_raw, equal_weight_raw, restricted_random_raw in [
+        ("train", train_policy_raw, train_policy_excess, train_benchmark_raw, train_equal_weight_raw, train_restricted_random_raw),
+        (
+            "validation",
+            validation_policy_raw,
+            validation_policy_excess,
+            validation_benchmark_raw,
+            validation_equal_weight_raw,
+            validation_restricted_random_raw,
+        ),
+        ("all", full_policy_raw, full_policy_excess, full_benchmark_raw, full_equal_weight_raw, full_restricted_random_raw),
     ]:
         t_statistic, p_value = _one_sided_greater_test(policy_excess)
+        equal_weight_excess = np.asarray(policy_raw, dtype=np.float64) - np.asarray(equal_weight_raw, dtype=np.float64)
+        equal_weight_t, equal_weight_p = _one_sided_greater_test(equal_weight_excess)
+        restricted_random_excess = np.asarray(policy_raw, dtype=np.float64) - np.asarray(restricted_random_raw, dtype=np.float64)
+        restricted_random_t, restricted_random_p = _one_sided_greater_test(restricted_random_excess)
         rows[split_name] = {
             "samples": len(policy_excess),
             "benchmark_mean_raw_return": float(np.mean(benchmark_raw)),
+            "equal_weight_mean_raw_return": float(np.mean(equal_weight_raw)),
+            "restricted_random_mean_raw_return": float(np.mean(restricted_random_raw)),
             "policy_mean_raw_return": float(np.mean(policy_raw)),
             "policy_mean_excess_return": float(np.mean(policy_excess)),
+            "policy_mean_excess_vs_equal_weight": float(np.mean(equal_weight_excess)),
+            "policy_mean_excess_vs_restricted_random": float(np.mean(restricted_random_excess)),
             "t_statistic": t_statistic,
             "p_value": p_value,
             "significant_outperformance": bool(np.isfinite(p_value) and p_value < alpha and np.mean(policy_excess) > 0.0),
+            "equal_weight_t_statistic": equal_weight_t,
+            "equal_weight_p_value": equal_weight_p,
+            "equal_weight_significant_outperformance": bool(
+                np.isfinite(equal_weight_p) and equal_weight_p < alpha and np.mean(equal_weight_excess) > 0.0
+            ),
+            "restricted_random_t_statistic": restricted_random_t,
+            "restricted_random_p_value": restricted_random_p,
+            "restricted_random_significant_outperformance": bool(
+                np.isfinite(restricted_random_p)
+                and restricted_random_p < alpha
+                and np.mean(restricted_random_excess) > 0.0
+            ),
         }
     summary = pd.DataFrame(rows).T
     summary.index.name = "Split"
     return summary
+
+
+def _benchmark_selection_key(
+    benchmark_excess_returns: np.ndarray,
+    equal_weight_excess_returns: np.ndarray,
+    restricted_random_excess_returns: np.ndarray,
+) -> tuple[float, float, float, float]:
+    """Rank checkpoints by multi-baseline significance first, then excess-return breadth."""
+    benchmark_t, benchmark_p = _one_sided_greater_test(benchmark_excess_returns)
+    equal_weight_t, equal_weight_p = _one_sided_greater_test(equal_weight_excess_returns)
+    restricted_random_t, restricted_random_p = _one_sided_greater_test(restricted_random_excess_returns)
+    significance_count = float(
+        sum(
+            [
+                np.isfinite(benchmark_p) and benchmark_p < 0.05 and np.mean(benchmark_excess_returns) > 0.0,
+                np.isfinite(equal_weight_p) and equal_weight_p < 0.05 and np.mean(equal_weight_excess_returns) > 0.0,
+                np.isfinite(restricted_random_p)
+                and restricted_random_p < 0.05
+                and np.mean(restricted_random_excess_returns) > 0.0,
+            ]
+        )
+    )
+    average_excess = float(
+        np.mean(
+            [
+                np.mean(benchmark_excess_returns),
+                np.mean(equal_weight_excess_returns),
+                np.mean(restricted_random_excess_returns),
+            ]
+        )
+    )
+    average_t = float(np.mean([benchmark_t, equal_weight_t, restricted_random_t]))
+    benchmark_mean = float(np.mean(benchmark_excess_returns))
+    safe_average_t = average_t if np.isfinite(average_t) else float("-inf")
+    return significance_count, average_excess, benchmark_mean, safe_average_t
 
 
 def train_transformer_actor_critic(
@@ -470,6 +770,7 @@ def train_transformer_actor_critic(
     config: RLTrainingConfig,
     *,
     device: str | torch.device | None = None,
+    progress_callback: Callable[[int, pd.DataFrame], None] | None = None,
 ) -> RLTrainingResult:
     """Train a transformer actor-critic policy from offline demonstrations."""
     torch.manual_seed(config.seed)
@@ -514,6 +815,9 @@ def train_transformer_actor_critic(
     )
 
     history_rows: list[dict[str, float]] = []
+    best_epoch = 0
+    best_validation_key: tuple[float, float, float, float] | None = None
+    best_state_dict: dict[str, torch.Tensor] | None = None
 
     for epoch in range(1, config.epochs + 1):
         model.train()
@@ -570,6 +874,20 @@ def train_transformer_actor_critic(
             validation_dataset.forward_segments,
             validation_dataset.benchmark_rewards,
         )
+        validation_policy_excess_vs_equal_weight = validation_policy_raw - validation_dataset.equal_weight_rewards
+        validation_policy_excess_vs_restricted_random = (
+            validation_policy_raw - validation_dataset.restricted_random_rewards
+        )
+        validation_t_statistic, validation_p_value = _one_sided_greater_test(validation_policy_excess)
+        validation_key = _benchmark_selection_key(
+            validation_policy_excess,
+            validation_policy_excess_vs_equal_weight,
+            validation_policy_excess_vs_restricted_random,
+        )
+        if best_validation_key is None or validation_key > best_validation_key:
+            best_validation_key = validation_key
+            best_epoch = epoch
+            best_state_dict = deepcopy(model.state_dict())
 
         history_rows.append(
             {
@@ -579,46 +897,148 @@ def train_transformer_actor_critic(
                 "train_critic_loss": totals["critic"] / max(totals["samples"], 1),
                 "train_bc_loss": totals["bc"] / max(totals["samples"], 1),
                 "train_entropy": totals["entropy"] / max(totals["samples"], 1),
-                "train_demo_excess_return": float(train_dataset.rewards.mean()),
+                "train_demo_training_reward": float(train_dataset.rewards.mean()),
+                "train_demo_excess_return": float((train_dataset.raw_rewards - train_dataset.benchmark_rewards).mean()),
                 "train_policy_excess_return": float(train_policy_excess.mean()),
-                "validation_demo_excess_return": float(validation_dataset.rewards.mean()),
+                "train_policy_training_reward": float(
+                    _compose_reward_vector(
+                        train_policy_raw,
+                        benchmark_rewards=train_dataset.benchmark_rewards,
+                        equal_weight_rewards=train_dataset.equal_weight_rewards,
+                        restricted_random_rewards=train_dataset.restricted_random_rewards,
+                    ).mean()
+                ),
+                "validation_demo_training_reward": float(validation_dataset.rewards.mean()),
+                "validation_demo_excess_return": float(
+                    (validation_dataset.raw_rewards - validation_dataset.benchmark_rewards).mean()
+                ),
                 "validation_policy_excess_return": float(validation_policy_excess.mean()),
+                "validation_policy_training_reward": float(
+                    _compose_reward_vector(
+                        validation_policy_raw,
+                        benchmark_rewards=validation_dataset.benchmark_rewards,
+                        equal_weight_rewards=validation_dataset.equal_weight_rewards,
+                        restricted_random_rewards=validation_dataset.restricted_random_rewards,
+                    ).mean()
+                ),
+                "validation_t_statistic": float(validation_t_statistic),
+                "validation_p_value": float(validation_p_value),
             }
         )
+        if progress_callback is not None:
+            progress_callback(epoch, pd.DataFrame(history_rows).set_index("epoch"))
 
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+
+    train_policy_actions = _predict_policy_actions(
+        model,
+        train_dataset.states,
+        batch_size=config.batch_size,
+        device=target_device,
+    )
+    validation_policy_actions = _predict_policy_actions(
+        model,
+        validation_dataset.states,
+        batch_size=config.batch_size,
+        device=target_device,
+    )
     full_policy_actions = _predict_policy_actions(
         model,
         dataset.states,
         batch_size=config.batch_size,
         device=target_device,
     )
+
+    train_policy_raw, train_policy_excess = _evaluate_policy_returns(
+        train_policy_actions,
+        train_dataset.forward_segments,
+        train_dataset.benchmark_rewards,
+    )
+    train_policy_excess_vs_equal_weight = train_policy_raw - train_dataset.equal_weight_rewards
+    train_policy_excess_vs_restricted_random = train_policy_raw - train_dataset.restricted_random_rewards
+    train_policy_training_rewards = _compose_reward_vector(
+        train_policy_raw,
+        benchmark_rewards=train_dataset.benchmark_rewards,
+        equal_weight_rewards=train_dataset.equal_weight_rewards,
+        restricted_random_rewards=train_dataset.restricted_random_rewards,
+    )
+    validation_policy_raw, validation_policy_excess = _evaluate_policy_returns(
+        validation_policy_actions,
+        validation_dataset.forward_segments,
+        validation_dataset.benchmark_rewards,
+    )
+    validation_policy_excess_vs_equal_weight = validation_policy_raw - validation_dataset.equal_weight_rewards
+    validation_policy_excess_vs_restricted_random = (
+        validation_policy_raw - validation_dataset.restricted_random_rewards
+    )
+    validation_policy_training_rewards = _compose_reward_vector(
+        validation_policy_raw,
+        benchmark_rewards=validation_dataset.benchmark_rewards,
+        equal_weight_rewards=validation_dataset.equal_weight_rewards,
+        restricted_random_rewards=validation_dataset.restricted_random_rewards,
+    )
     full_policy_raw, full_policy_excess = _evaluate_policy_returns(
         full_policy_actions,
         dataset.forward_segments,
         dataset.benchmark_rewards,
     )
+    full_policy_excess_vs_equal_weight = full_policy_raw - dataset.equal_weight_rewards
+    full_policy_excess_vs_restricted_random = full_policy_raw - dataset.restricted_random_rewards
+    full_policy_training_rewards = _compose_reward_vector(
+        full_policy_raw,
+        benchmark_rewards=dataset.benchmark_rewards,
+        equal_weight_rewards=dataset.equal_weight_rewards,
+        restricted_random_rewards=dataset.restricted_random_rewards,
+    )
     benchmark_summary = _build_benchmark_summary(
         train_policy_raw=train_policy_raw,
         train_policy_excess=train_policy_excess,
         train_benchmark_raw=train_dataset.benchmark_rewards,
+        train_equal_weight_raw=train_dataset.equal_weight_rewards,
+        train_restricted_random_raw=train_dataset.restricted_random_rewards,
         validation_policy_raw=validation_policy_raw,
         validation_policy_excess=validation_policy_excess,
         validation_benchmark_raw=validation_dataset.benchmark_rewards,
+        validation_equal_weight_raw=validation_dataset.equal_weight_rewards,
+        validation_restricted_random_raw=validation_dataset.restricted_random_rewards,
         full_policy_raw=full_policy_raw,
         full_policy_excess=full_policy_excess,
         full_benchmark_raw=dataset.benchmark_rewards,
+        full_equal_weight_raw=dataset.equal_weight_rewards,
+        full_restricted_random_raw=dataset.restricted_random_rewards,
     )
 
     prediction_rows: list[dict[str, object]] = []
-    for sample_idx, (metadata_row, demo_action, policy_action, demo_raw, demo_excess, policy_raw, policy_excess) in enumerate(
+    for sample_idx, (
+        metadata_row,
+        demo_action,
+        policy_action,
+        demo_training_reward,
+        demo_raw,
+        demo_benchmark_raw,
+        demo_equal_weight_raw,
+        demo_restricted_random_raw,
+        policy_training_reward,
+        policy_raw,
+        policy_excess,
+        policy_excess_vs_equal_weight,
+        policy_excess_vs_restricted_random,
+    ) in enumerate(
         zip(
             dataset.metadata.itertuples(index=False),
             dataset.actions,
             full_policy_actions,
-            dataset.raw_rewards,
             dataset.rewards,
+            dataset.raw_rewards,
+            dataset.benchmark_rewards,
+            dataset.equal_weight_rewards,
+            dataset.restricted_random_rewards,
+            full_policy_training_rewards,
             full_policy_raw,
             full_policy_excess,
+            full_policy_excess_vs_equal_weight,
+            full_policy_excess_vs_restricted_random,
             strict=True,
         )
     ):
@@ -628,10 +1048,19 @@ def train_transformer_actor_critic(
             "rebalance_date": metadata_row.rebalance_date,
             "forward_start": metadata_row.forward_start,
             "forward_end": metadata_row.forward_end,
+            "demo_training_reward": float(demo_training_reward),
             "demo_raw_return": float(demo_raw),
-            "demo_excess_return": float(demo_excess),
+            "demo_benchmark_return": float(demo_benchmark_raw),
+            "demo_equal_weight_return": float(demo_equal_weight_raw),
+            "demo_restricted_random_return": float(demo_restricted_random_raw),
+            "demo_excess_return": float(demo_raw - demo_benchmark_raw),
+            "demo_excess_vs_equal_weight": float(demo_raw - demo_equal_weight_raw),
+            "demo_excess_vs_restricted_random": float(demo_raw - demo_restricted_random_raw),
+            "policy_training_reward": float(policy_training_reward),
             "policy_raw_return": float(policy_raw),
             "policy_excess_return": float(policy_excess),
+            "policy_excess_vs_equal_weight": float(policy_excess_vs_equal_weight),
+            "policy_excess_vs_restricted_random": float(policy_excess_vs_restricted_random),
         }
         for ticker, demo_weight, policy_weight in zip(dataset.tickers, demo_action, policy_action, strict=True):
             row[f"demo_weight_{ticker}"] = float(demo_weight)
@@ -645,31 +1074,68 @@ def train_transformer_actor_critic(
         {
             "train": {
                 "samples": len(train_dataset.states),
-                "demo_mean_excess_return": float(train_dataset.rewards.mean()),
+                "demo_mean_training_reward": float(train_dataset.rewards.mean()),
                 "policy_mean_excess_return": float(train_policy_excess.mean()),
+                "policy_mean_training_reward": float(train_policy_training_rewards.mean()),
                 "demo_mean_raw_return": float(train_dataset.raw_rewards.mean()),
+                "demo_mean_excess_return": float((train_dataset.raw_rewards - train_dataset.benchmark_rewards).mean()),
+                "demo_mean_excess_vs_equal_weight": float(
+                    (train_dataset.raw_rewards - train_dataset.equal_weight_rewards).mean()
+                ),
+                "demo_mean_excess_vs_restricted_random": float(
+                    (train_dataset.raw_rewards - train_dataset.restricted_random_rewards).mean()
+                ),
                 "policy_mean_raw_return": float(train_policy_raw.mean()),
+                "policy_mean_excess_vs_equal_weight": float(train_policy_excess_vs_equal_weight.mean()),
+                "policy_mean_excess_vs_restricted_random": float(train_policy_excess_vs_restricted_random.mean()),
                 "mean_abs_weight_error": float(np.mean(np.abs(train_policy_actions - train_dataset.actions))),
             },
             "validation": {
                 "samples": len(validation_dataset.states),
-                "demo_mean_excess_return": float(validation_dataset.rewards.mean()),
+                "demo_mean_training_reward": float(validation_dataset.rewards.mean()),
                 "policy_mean_excess_return": float(validation_policy_excess.mean()),
+                "policy_mean_training_reward": float(validation_policy_training_rewards.mean()),
                 "demo_mean_raw_return": float(validation_dataset.raw_rewards.mean()),
+                "demo_mean_excess_return": float(
+                    (validation_dataset.raw_rewards - validation_dataset.benchmark_rewards).mean()
+                ),
+                "demo_mean_excess_vs_equal_weight": float(
+                    (validation_dataset.raw_rewards - validation_dataset.equal_weight_rewards).mean()
+                ),
+                "demo_mean_excess_vs_restricted_random": float(
+                    (validation_dataset.raw_rewards - validation_dataset.restricted_random_rewards).mean()
+                ),
                 "policy_mean_raw_return": float(validation_policy_raw.mean()),
+                "policy_mean_excess_vs_equal_weight": float(validation_policy_excess_vs_equal_weight.mean()),
+                "policy_mean_excess_vs_restricted_random": float(
+                    validation_policy_excess_vs_restricted_random.mean()
+                ),
                 "mean_abs_weight_error": float(np.mean(np.abs(validation_policy_actions - validation_dataset.actions))),
             },
             "all": {
                 "samples": len(dataset.states),
-                "demo_mean_excess_return": float(dataset.rewards.mean()),
+                "demo_mean_training_reward": float(dataset.rewards.mean()),
                 "policy_mean_excess_return": float(full_policy_excess.mean()),
+                "policy_mean_training_reward": float(full_policy_training_rewards.mean()),
                 "demo_mean_raw_return": float(dataset.raw_rewards.mean()),
+                "demo_mean_excess_return": float((dataset.raw_rewards - dataset.benchmark_rewards).mean()),
+                "demo_mean_excess_vs_equal_weight": float(
+                    (dataset.raw_rewards - dataset.equal_weight_rewards).mean()
+                ),
+                "demo_mean_excess_vs_restricted_random": float(
+                    (dataset.raw_rewards - dataset.restricted_random_rewards).mean()
+                ),
                 "policy_mean_raw_return": float(full_policy_raw.mean()),
+                "policy_mean_excess_vs_equal_weight": float(full_policy_excess_vs_equal_weight.mean()),
+                "policy_mean_excess_vs_restricted_random": float(
+                    full_policy_excess_vs_restricted_random.mean()
+                ),
                 "mean_abs_weight_error": float(np.mean(np.abs(full_policy_actions - dataset.actions))),
             },
         }
     ).T
     evaluation_summary.index.name = "Split"
+    model_score_summary = build_model_score_summary(benchmark_summary, evaluation_summary)
 
     latest_policy_weights = pd.Series(
         full_policy_actions[-1],
@@ -680,6 +1146,7 @@ def train_transformer_actor_critic(
 
     history = pd.DataFrame(history_rows).set_index("epoch")
     history.index.name = "Epoch"
+    history["selected_checkpoint"] = history.index == best_epoch
 
     return RLTrainingResult(
         model=model,
@@ -690,6 +1157,8 @@ def train_transformer_actor_critic(
         policy_predictions=policy_predictions,
         latest_policy_weights=latest_policy_weights,
         tickers=dataset.tickers,
+        selected_epoch=best_epoch,
+        model_score_summary=model_score_summary,
     )
 
 
@@ -710,6 +1179,7 @@ def save_actor_critic_artifacts(
             "state_dict": result.model.state_dict(),
             "tickers": result.tickers,
             "training_config": asdict(result.config),
+            "selected_epoch": result.selected_epoch,
         },
         model_path,
     )
@@ -720,6 +1190,7 @@ def save_actor_critic_artifacts(
         "training_history": save_frame(result.history, destination / "training_history.csv"),
         "evaluation_summary": save_frame(result.evaluation_summary, destination / "evaluation_summary.csv"),
         "benchmark_summary": save_frame(result.benchmark_summary, destination / "benchmark_summary.csv"),
+        "model_score_summary": save_frame(result.model_score_summary, destination / "model_score_summary.csv"),
         "policy_predictions": save_frame(result.policy_predictions.set_index("sample_id"), destination / "policy_predictions.csv"),
         "latest_policy_weights": save_frame(result.latest_policy_weights, destination / "latest_policy_weights.csv"),
         "training_diagnostics_fig": plot_rl_training_diagnostics(result.history, figures_dir / "training_diagnostics.png"),
