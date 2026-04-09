@@ -1,0 +1,28 @@
+Portfolio Fit: 1y_20260409_013943_benchmark_beater_round01
+Tickers: VOO, IVV, SPY, VTI, QQQ, VEA, VUG, GLD, IEFA, VTV
+Training horizon: 1y
+Start date: 2018-01-01
+End date: 2026-04-08
+Benchmark: SPY
+Rebalance frequency: 2W-FRI
+Selected candidate: portfolio_oracle_top2_192x6x4
+Selected epoch: 51
+
+Composite model score:
+            benchmark_component  equal_weight_component  restricted_random_component  raw_return_component  significance_component  significance_bonus  weight_error_penalty  composite_score
+Split                                                                                                                                                                                        
+train                   -4.2470                 -1.7089                      -1.4554                3.8313                 -3.7009              0.0000                9.2834         -16.5643
+validation              25.3003                 15.8387                      11.7036                9.4690                 12.3598             10.0000                7.1305          77.5410
+all                      3.9909                  2.9368                       1.9749                5.9444                  5.0652              0.0000                8.8508          11.0614
+
+Baseline ticker qualification:
+     split  beats_all_tickers  significant_vs_all_tickers  min_mean_excess_return  mean_mean_excess_return
+     train              False                       False               -0.003216                -0.000833
+validation               True                        True                0.002100                 0.010786
+       all              False                       False               -0.000433                 0.001502
+
+Candidate sweep:
+                      candidate  selected_epoch  hidden_dim  attention_heads  attention_layers  epochs                                                                   objectives  training_samples  evaluation_samples  all_composite_score  validation_beats_all_tickers  validation_significant_vs_all_tickers  validation_min_mean_excess_return  all_beats_all_tickers  all_significant_vs_all_tickers  all_min_mean_excess_return                                                                                                                                                 candidate_dir
+  portfolio_oracle_top2_192x6x4              51         192                6                 4      56                       best_asset,best_asset_anchor,top2_blend,oracle_softmax               836                 836            11.061373                          True                                   True                           0.002100                  False                           False                   -0.000433   /Users/calvinlomax/Desktop/QuantShield/outputs/model_experiments/1y/20260409_013943_benchmark_beater_round01/candidate_models/portfolio_oracle_top2_192x6x4
+ portfolio_oracle_blend_224x8x4              24         224                8                 4      64 best_asset,best_asset_anchor,top2_blend,oracle_softmax,forward_mean_variance              1045                1045            49.856690                         False                                  False                          -0.005658                   True                            True                    0.002539  /Users/calvinlomax/Desktop/QuantShield/outputs/model_experiments/1y/20260409_013943_benchmark_beater_round01/candidate_models/portfolio_oracle_blend_224x8x4
+portfolio_oracle_single_160x4x3               6         160                4                 3      48                               best_asset,best_asset_anchor,best_asset_mirror               627                 627            47.639628                         False                                  False                          -0.006958                   True                            True                    0.002196 /Users/calvinlomax/Desktop/QuantShield/outputs/model_experiments/1y/20260409_013943_benchmark_beater_round01/candidate_models/portfolio_oracle_single_160x4x3

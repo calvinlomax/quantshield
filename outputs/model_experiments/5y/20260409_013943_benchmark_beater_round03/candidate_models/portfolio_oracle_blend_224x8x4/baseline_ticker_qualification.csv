@@ -1,0 +1,4 @@
+Index,split,beats_all_tickers,significant_vs_all_tickers,min_mean_excess_return,mean_mean_excess_return
+0,train,True,True,0.0046657971328213105,0.009830892848826591
+1,validation,False,False,-0.011948627375421069,0.011330681684471312
+2,all,True,True,0.006005909471284775,0.010130850615955533
