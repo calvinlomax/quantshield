@@ -24,12 +24,10 @@ from quantshield.model_scoring import build_model_score_summary
 from quantshield.preprocessing import clean_price_data, compute_returns
 from quantshield.replay_durations import REPLAY_DURATION_PROFILES
 from quantshield.rl import RLTrainingConfig, _build_benchmark_summary, build_offline_rl_dataset
-from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE
-from quantshield.utils import save_frame
-from scripts.fit_portfolio_model import _build_forward_weight_histories, _infer_asset_class_map
+from quantshield.universe import CANONICAL_TOP_50_UNIVERSE, CANONICAL_TOP_ETF_UNIVERSE
+from quantshield.utils import generate_schedule, save_frame
 from scripts.train_benchmark_beating_duration_models import DEFAULT_DURATION_FREQUENCIES
 
-PLACEHOLDER_TICKERS = [f"ASSET_{index:02d}" for index in range(1, len(CANONICAL_TOP_ETF_UNIVERSE) + 1)]
 ORACLE_VARIANTS = {
     "portfolio_oracle_memory_best_asset": "best_asset",
     "portfolio_oracle_memory_best_asset_anchor": "best_asset_anchor",
@@ -46,6 +44,13 @@ def parse_args() -> argparse.Namespace:
         "--output-root",
         default="outputs/model_experiments",
         help="Base directory for generated oracle memory checkpoints.",
+    )
+    parser.add_argument(
+        "--universe-size",
+        type=int,
+        choices=(10, 50),
+        default=10,
+        help="Synthetic portfolio width for the generated oracle memory suite.",
     )
     return parser.parse_args()
 
@@ -81,7 +86,107 @@ def _build_evaluation_summary(dataset, *, split_index: int) -> pd.DataFrame:
     return frame
 
 
-def _build_baseline_ticker_summary(dataset, *, split_index: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _placeholder_tickers(count: int) -> list[str]:
+    return [f"ASSET_{index:02d}" for index in range(1, count + 1)]
+
+
+def _selected_universe(universe_size: int) -> list[str]:
+    return list(CANONICAL_TOP_50_UNIVERSE if int(universe_size) > 10 else CANONICAL_TOP_ETF_UNIVERSE)
+
+
+def _load_or_merge_cached_prices(
+    loader: MarketDataLoader,
+    *,
+    tickers: list[str],
+    start_date: str,
+    end_date: str | None,
+) -> pd.DataFrame:
+    cache_path = loader.cache_path(tickers, start_date, end_date)
+    selected_series: dict[str, pd.Series] = {}
+    selection_metadata: dict[str, tuple[pd.Timestamp, pd.Timestamp, int, str]] = {}
+    for candidate_path in sorted(loader.cache_dir.glob("*.csv")):
+        try:
+            candidate_prices = loader.load_cached_prices(candidate_path)
+        except Exception:
+            continue
+        if candidate_prices.empty:
+            continue
+        normalized = candidate_prices.copy()
+        normalized.columns = [str(column).strip().upper() for column in normalized.columns]
+        normalized.index = pd.to_datetime(normalized.index)
+        available = [ticker for ticker in tickers if ticker in normalized.columns]
+        for ticker in available:
+            series = pd.to_numeric(normalized[ticker], errors="coerce").dropna()
+            if series.empty:
+                continue
+            candidate_metadata = (series.index.min(), series.index.max(), len(series), candidate_path.name)
+            current_metadata = selection_metadata.get(ticker)
+            if current_metadata is None or candidate_metadata[0] < current_metadata[0] or (
+                candidate_metadata[0] == current_metadata[0]
+                and (candidate_metadata[1] > current_metadata[1] or candidate_metadata[2] > current_metadata[2])
+            ):
+                selected_series[ticker] = series.rename(ticker)
+                selection_metadata[ticker] = candidate_metadata
+
+    missing = [ticker for ticker in tickers if ticker not in selected_series]
+    if missing:
+        raise ValueError(
+            "Could not assemble the requested oracle-memory universe from local caches. "
+            f"Missing tickers: {', '.join(sorted(missing))}"
+        )
+
+    merged = pd.concat([selected_series[ticker] for ticker in tickers], axis=1, sort=True)
+    merged = merged.sort_index()
+    merged = merged.loc[merged.index >= pd.Timestamp(start_date)]
+    if end_date is not None:
+        merged = merged.loc[merged.index <= pd.Timestamp(end_date)]
+    merged = merged.loc[:, tickers]
+    merged.index.name = "Date"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_csv(cache_path, index_label="Date")
+    return merged
+
+
+def _build_oracle_weight_histories(
+    returns: pd.DataFrame,
+    *,
+    tickers: list[str],
+    lookback_window: int,
+    rebalance_frequency: str,
+) -> dict[str, pd.DataFrame]:
+    rebalance_dates = list(generate_schedule(returns.index, rebalance_frequency))
+    histories = {
+        "best_asset": [],
+        "best_asset_anchor": [],
+    }
+    for position, rebalance_date in enumerate(rebalance_dates):
+        history = returns.loc[:rebalance_date, tickers]
+        if len(history) < lookback_window:
+            continue
+        start_idx = returns.index.get_loc(rebalance_date) + 1
+        if start_idx >= len(returns.index):
+            continue
+        if position < len(rebalance_dates) - 1:
+            end_idx = returns.index.get_loc(rebalance_dates[position + 1])
+        else:
+            end_idx = len(returns.index) - 1
+        forward_segment = returns.iloc[start_idx : end_idx + 1].loc[:, tickers]
+        if forward_segment.empty:
+            continue
+        cumulative = (1.0 + forward_segment).prod() - 1.0
+        best_ticker = str(cumulative.idxmax())
+        weights = pd.Series(0.0, index=tickers, name=rebalance_date)
+        weights.loc[best_ticker] = 1.0
+        histories["best_asset"].append(weights.copy())
+        histories["best_asset_anchor"].append(weights.copy())
+
+    return {
+        name: pd.DataFrame(series_list) if series_list else pd.DataFrame(columns=tickers)
+        for name, series_list in histories.items()
+    }
+
+
+def _build_baseline_ticker_summary(dataset, *, split_index: int, baseline_tickers: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     split_slices = {
         "train": slice(0, split_index),
         "validation": slice(split_index, len(dataset.states)),
@@ -93,7 +198,7 @@ def _build_baseline_ticker_summary(dataset, *, split_index: int) -> tuple[pd.Dat
         split_policy = dataset.raw_rewards[split_slice]
         split_segments = dataset.forward_segments[split_slice]
         split_rows: list[dict[str, object]] = []
-        for column_index, ticker in enumerate(CANONICAL_TOP_ETF_UNIVERSE):
+        for column_index, ticker in enumerate(baseline_tickers):
             baseline_returns = np.asarray(
                 [np.prod(1.0 + segment[:, column_index]) - 1.0 for segment in split_segments],
                 dtype=np.float64,
@@ -125,7 +230,7 @@ def _build_baseline_ticker_summary(dataset, *, split_index: int) -> tuple[pd.Dat
     return pd.DataFrame(detail_rows), pd.DataFrame(aggregate_rows)
 
 
-def _build_policy_predictions(dataset) -> pd.DataFrame:
+def _build_policy_predictions(dataset, *, placeholder_tickers: list[str]) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for sample_idx, (metadata_row, action, raw_reward, benchmark_reward, equal_weight_reward, random_reward) in enumerate(
         zip(
@@ -158,7 +263,7 @@ def _build_policy_predictions(dataset) -> pd.DataFrame:
             "policy_excess_vs_equal_weight": float(raw_reward - equal_weight_reward),
             "policy_excess_vs_restricted_random": float(raw_reward - random_reward),
         }
-        for ticker, weight in zip(PLACEHOLDER_TICKERS, action, strict=True):
+        for ticker, weight in zip(placeholder_tickers, action, strict=True):
             row[f"demo_weight_{ticker}"] = float(weight)
             row[f"policy_weight_{ticker}"] = float(weight)
         rows.append(row)
@@ -180,6 +285,7 @@ def _save_oracle_variant(
     aggregate_frame: pd.DataFrame,
     model_score_summary: pd.DataFrame,
     training_config: RLTrainingConfig,
+    placeholder_tickers: list[str],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -187,7 +293,7 @@ def _save_oracle_variant(
             "policy_kind": "nearest_neighbor",
             "nearest_neighbor_states": dataset.states.astype(np.float32),
             "nearest_neighbor_actions": dataset.actions.astype(np.float32),
-            "tickers": PLACEHOLDER_TICKERS,
+            "tickers": placeholder_tickers,
             "training_config": asdict(training_config),
             "selected_epoch": 0,
             "duration_key": duration_key,
@@ -202,8 +308,8 @@ def _save_oracle_variant(
     save_frame(model_score_summary, output_dir / "model_score_summary.csv")
     save_frame(detail_frame, output_dir / "baseline_ticker_summary.csv")
     save_frame(aggregate_frame, output_dir / "baseline_ticker_qualification.csv")
-    save_frame(_build_policy_predictions(dataset).set_index("sample_id"), output_dir / "policy_predictions.csv")
-    latest_policy_weights = pd.Series(dataset.actions[-1], index=PLACEHOLDER_TICKERS, name="policy_weight")
+    save_frame(_build_policy_predictions(dataset, placeholder_tickers=placeholder_tickers).set_index("sample_id"), output_dir / "policy_predictions.csv")
+    latest_policy_weights = pd.Series(dataset.actions[-1], index=placeholder_tickers, name="policy_weight")
     latest_policy_weights.index.name = "Ticker"
     save_frame(latest_policy_weights, output_dir / "latest_policy_weights.csv")
     summary_lines = [
@@ -224,35 +330,33 @@ def _save_oracle_variant(
 
 def main() -> None:
     args = parse_args()
-    output_root = ROOT / args.output_root
+    output_root = ROOT / args.output_root / f"portfolio_size_{int(args.universe_size)}"
     run_stamp = pd.Timestamp.now(tz="UTC").strftime("%Y%m%d_%H%M%S")
+    tickers = _selected_universe(args.universe_size)
+    placeholder_tickers = _placeholder_tickers(len(tickers))
 
     config = load_config(args.config)
-    tickers = list(CANONICAL_TOP_ETF_UNIVERSE)
     loader = MarketDataLoader(cache_dir=config.data.cache_dir)
     prices = clean_price_data(
-        loader.fetch_prices(
-            tickers,
-            args.start_date,
-            args.end_date,
-            use_cache=config.data.use_cache,
-            force_refresh=config.data.force_refresh,
+        _load_or_merge_cached_prices(
+            loader,
+            tickers=tickers,
+            start_date=args.start_date,
+            end_date=args.end_date,
         ),
         drop_all_nan_assets=config.preprocessing.drop_all_nan_assets,
         forward_fill=config.preprocessing.forward_fill_prices,
     )
     returns = compute_returns(prices, return_type=config.preprocessing.return_type)
-    asset_class_map = _infer_asset_class_map(tickers)
 
     summary_rows: list[dict[str, object]] = []
     for profile in REPLAY_DURATION_PROFILES:
         frequency = DEFAULT_DURATION_FREQUENCIES.get(profile.key, "ME")
-        histories = _build_forward_weight_histories(
+        histories = _build_oracle_weight_histories(
             returns,
             tickers=tickers,
             lookback_window=profile.lookback_window,
             rebalance_frequency=frequency,
-            asset_class_map=asset_class_map,
         )
         for variant_name, history_key in ORACLE_VARIANTS.items():
             dataset = build_offline_rl_dataset(
@@ -281,7 +385,11 @@ def main() -> None:
             )
             evaluation_summary = _build_evaluation_summary(dataset, split_index=split_index)
             model_score_summary = build_model_score_summary(benchmark_summary, evaluation_summary)
-            detail_frame, aggregate_frame = _build_baseline_ticker_summary(dataset, split_index=split_index)
+            detail_frame, aggregate_frame = _build_baseline_ticker_summary(
+                dataset,
+                split_index=split_index,
+                baseline_tickers=tickers,
+            )
 
             variant_dir = output_root / profile.key / f"{run_stamp}_{variant_name}"
             training_config = RLTrainingConfig(
@@ -303,6 +411,7 @@ def main() -> None:
                 aggregate_frame=aggregate_frame,
                 model_score_summary=model_score_summary,
                 training_config=training_config,
+                placeholder_tickers=placeholder_tickers,
             )
             validation_row = aggregate_frame.loc[aggregate_frame["split"] == "validation"].iloc[0]
             all_row = aggregate_frame.loc[aggregate_frame["split"] == "all"].iloc[0]

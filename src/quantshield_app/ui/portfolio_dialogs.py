@@ -630,7 +630,7 @@ class ReplaySummaryDialog(QDialog):
     def __init__(self, *, replay_result: PolicyReplayResult, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Backtest Summary")
-        self.resize(1240, 760)
+        self.resize(1360, 760)
 
         layout = QVBoxLayout(self)
         header = QLabel(self._header_text(replay_result), self)
@@ -689,12 +689,19 @@ class ReplaySummaryDialog(QDialog):
             if len(comparison) > 1 and "active_vs_equal_weight" in comparison.columns
             else np.nan
         )
+        active_vs_markowitz_tracking_error = (
+            float(comparison["active_vs_markowitz"].std(ddof=1) * np.sqrt(periods_per_year))
+            if len(comparison) > 1 and "active_vs_markowitz" in comparison.columns
+            else np.nan
+        )
         average_turnover = float(np.mean([frame.turnover for frame in replay_result.frames if frame.rebalanced])) if replay_result.frames else 0.0
         drawdown_duration, recovered = ReplaySummaryDialog._drawdown_duration(comparison["portfolio"])
         equal_weight_drawdown_duration, equal_weight_recovered = ReplaySummaryDialog._drawdown_duration(comparison["equal_weight"])
+        markowitz_drawdown_duration, markowitz_recovered = ReplaySummaryDialog._drawdown_duration(comparison["markowitz"]) if "markowitz" in comparison.columns else (0, True)
         interpretation = ReplaySummaryDialog._interpretation(replay_result, beta=beta, tracking_error=tracking_error)
         summary = replay_result.summary_table
         equal_weight_summary = summary.loc["equal_weight"] if "equal_weight" in summary.index else None
+        markowitz_summary = summary.loc["markowitz"] if "markowitz" in summary.index else None
 
         lines = [
             "Timeframe",
@@ -753,11 +760,48 @@ class ReplaySummaryDialog(QDialog):
                 else "- Active weighting vs equal-weight tracking error: —"
             ),
             "",
+            "Markowitz Baseline",
+            f"- Markowitz cumulative return: {_format_percent(replay_result.metrics['markowitz_total_return'])}."
+            if "markowitz_total_return" in replay_result.metrics
+            else "- Markowitz cumulative return: —",
+            (
+                f"- Markowitz annualized return: {_format_percent(float(markowitz_summary['annualized_return']))}."
+                if markowitz_summary is not None and math.isfinite(float(markowitz_summary["annualized_return"]))
+                else "- Markowitz annualized return: —"
+            ),
+            (
+                f"- Markowitz annualized volatility: {_format_percent(float(markowitz_summary['annualized_volatility']))}."
+                if markowitz_summary is not None and math.isfinite(float(markowitz_summary["annualized_volatility"]))
+                else "- Markowitz annualized volatility: —"
+            ),
+            (
+                f"- Markowitz Sharpe ratio: {float(markowitz_summary['sharpe_ratio']):.3f}."
+                if markowitz_summary is not None and math.isfinite(float(markowitz_summary["sharpe_ratio"]))
+                else "- Markowitz Sharpe ratio: —"
+            ),
+            (
+                f"- Markowitz max drawdown: {_format_percent(float(markowitz_summary['max_drawdown']))}."
+                if markowitz_summary is not None and math.isfinite(float(markowitz_summary["max_drawdown"]))
+                else "- Markowitz max drawdown: —"
+            ),
+            (
+                f"- Active weighting vs Markowitz total return: {_format_percent(replay_result.metrics['active_vs_markowitz_total_return'])}."
+                if "active_vs_markowitz_total_return" in replay_result.metrics
+                else "- Active weighting vs Markowitz total return: —"
+            ),
+            (
+                f"- Active weighting vs Markowitz tracking error: {_format_percent(active_vs_markowitz_tracking_error)}."
+                if math.isfinite(active_vs_markowitz_tracking_error)
+                else "- Active weighting vs Markowitz tracking error: —"
+            ),
+            "",
             "Drawdown",
             f"- Longest drawdown duration: {drawdown_duration} trading days.",
             f"- Recovery status: {'Recovered by the end of the test window.' if recovered else 'Still below peak at the end of the window.'}",
             f"- Equal-weight drawdown duration: {equal_weight_drawdown_duration} trading days.",
             f"- Equal-weight recovery status: {'Recovered by the end of the test window.' if equal_weight_recovered else 'Still below peak at the end of the window.'}",
+            f"- Markowitz drawdown duration: {markowitz_drawdown_duration} trading days.",
+            f"- Markowitz recovery status: {'Recovered by the end of the test window.' if markowitz_recovered else 'Still below peak at the end of the window.'}",
             "",
             "Interpretation",
             f"- {interpretation}",

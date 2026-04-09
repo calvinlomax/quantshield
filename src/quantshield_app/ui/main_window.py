@@ -47,7 +47,7 @@ from quantshield.replay_durations import (
     duration_end_from_start,
     duration_start_from_end,
 )
-from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE
+from quantshield.universe import CANONICAL_TOP_50_UNIVERSE, CANONICAL_TOP_ETF_UNIVERSE
 from quantshield.utils import format_percent, generate_schedule
 from quantshield_app.services import (
     CheckpointDescriptor,
@@ -81,6 +81,9 @@ PLAYBACK_SPEEDS_MS: dict[str, int] = {
     "4x": 18,
     "8x": 9,
 }
+ALLOWED_PORTFOLIO_SIZES: tuple[int, int] = (10, 50)
+DEFAULT_MAX_PORTFOLIO_SIZE = 10
+ASSET_GRID_COLUMNS = 5
 
 
 @dataclass(slots=True)
@@ -253,6 +256,7 @@ class QuantShieldMainWindow(QMainWindow):
         self._current_interval_mode = "auto"
         self._current_estimated_steps = 0
         self._holdings_dialog: HoldingsBreakdownDialog | None = None
+        self._max_portfolio_size = DEFAULT_MAX_PORTFOLIO_SIZE
 
         self.playback_timer = QTimer(self)
         self.playback_timer.timeout.connect(self._advance_playback)
@@ -361,9 +365,13 @@ class QuantShieldMainWindow(QMainWindow):
         self.drawdown_toggle.toggled.connect(self._on_drawdown_toggle_changed)
         self.equal_weight_toggle = QCheckBox("Show Equal Weight", chart_header)
         self.equal_weight_toggle.toggled.connect(self._on_equal_weight_toggle_changed)
+        self.markowitz_toggle = QCheckBox("Show Markowitz", chart_header)
+        self.markowitz_toggle.setToolTip("Compare the model to a rolling long-only mean-variance baseline on the same rebalance dates.")
+        self.markowitz_toggle.toggled.connect(self._on_markowitz_toggle_changed)
         chart_header_layout.addStretch(1)
         chart_header_layout.addWidget(self.drawdown_toggle)
         chart_header_layout.addWidget(self.equal_weight_toggle)
+        chart_header_layout.addWidget(self.markowitz_toggle)
         charts_layout.addWidget(chart_header)
 
         charts_layout.addWidget(self.equity_canvas, stretch=5)
@@ -418,7 +426,7 @@ class QuantShieldMainWindow(QMainWindow):
         universe_layout.addLayout(model_row)
 
         universe_layout.addWidget(QLabel("Selected Assets", universe_group))
-        self.selected_assets_table = QTableWidget(2, 5, universe_group)
+        self.selected_assets_table = QTableWidget(0, ASSET_GRID_COLUMNS, universe_group)
         self.selected_assets_table.horizontalHeader().setVisible(False)
         self.selected_assets_table.verticalHeader().setVisible(False)
         self.selected_assets_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -427,10 +435,11 @@ class QuantShieldMainWindow(QMainWindow):
         self.selected_assets_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.selected_assets_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.selected_assets_table.setShowGrid(True)
-        self.selected_assets_table.setFixedHeight(82)
+        self._configure_selected_assets_table()
         universe_layout.addWidget(self.selected_assets_table)
 
-        self.ticker_help_label = QLabel("Up to 10 selected tickers are shown below.")
+        self.ticker_help_label = QLabel("")
+        self._update_ticker_help_label()
         universe_layout.addWidget(self.ticker_help_label)
         layout.addWidget(universe_group)
 
@@ -533,6 +542,11 @@ class QuantShieldMainWindow(QMainWindow):
         layout.addWidget(time_group)
 
         self.run_button = QPushButton("Run Backtest", group)
+        run_font = self.run_button.font()
+        if run_font.pointSizeF() > 0:
+            run_font.setPointSizeF(run_font.pointSizeF() * 1.2)
+        self.run_button.setFont(run_font)
+        self.run_button.setMinimumHeight(52)
         self.run_button.clicked.connect(self._start_replay_preparation)
         layout.addWidget(self.run_button)
         return group
@@ -551,6 +565,10 @@ class QuantShieldMainWindow(QMainWindow):
         self.play_pause_button = QPushButton("\u25B6", group)
         self.play_pause_button.setMinimumWidth(130)
         self.play_pause_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        play_font = self.play_pause_button.font()
+        if play_font.pointSizeF() > 0:
+            play_font.setPointSizeF(play_font.pointSizeF() * 2.5)
+        self.play_pause_button.setFont(play_font)
         self.play_pause_button.clicked.connect(self._toggle_playback)
         self.restart_button = QPushButton("Reset Simulation", group)
         self.step_back_button = QPushButton("Previous Step", group)
@@ -711,7 +729,12 @@ class QuantShieldMainWindow(QMainWindow):
         if self._pending_checkpoint_descriptor is not None:
             descriptor = self._match_descriptor(self._pending_checkpoint_descriptor.path)
             self._pending_checkpoint_descriptor = None
-        if descriptor is None and self._current_descriptor is not None and self._current_descriptor.duration_key == self._active_duration_key():
+        if (
+            descriptor is None
+            and self._current_descriptor is not None
+            and self._current_descriptor.duration_key == self._active_duration_key()
+            and self._descriptor_matches_active_portfolio_size(self._current_descriptor)
+        ):
             descriptor = self._match_descriptor(self._current_descriptor.path)
         if descriptor is None:
             descriptor = self._default_descriptor_for_duration(self._active_duration_key())
@@ -740,9 +763,20 @@ class QuantShieldMainWindow(QMainWindow):
 
     def _default_descriptor_for_duration(self, duration_key: str) -> CheckpointDescriptor | None:
         for descriptor in self._all_checkpoint_descriptors:
-            if descriptor.duration_key == duration_key:
+            if descriptor.duration_key == duration_key and self._descriptor_matches_active_portfolio_size(descriptor):
+                return descriptor
+        for descriptor in self._all_checkpoint_descriptors:
+            if self._descriptor_matches_active_portfolio_size(descriptor):
                 return descriptor
         return self._all_checkpoint_descriptors[0] if self._all_checkpoint_descriptors else None
+
+    def _descriptor_matches_active_portfolio_size(self, descriptor: CheckpointDescriptor) -> bool:
+        if descriptor.uses_placeholder_tickers:
+            return descriptor.slot_count == self._max_portfolio_size
+        return descriptor.slot_count <= self._max_portfolio_size
+
+    def _default_universe_for_current_size(self) -> list[str]:
+        return list(CANONICAL_TOP_50_UNIVERSE if self._max_portfolio_size > 10 else CANONICAL_TOP_ETF_UNIVERSE)
 
     def _match_descriptor(self, path: Path) -> CheckpointDescriptor | None:
         for descriptor in self._all_checkpoint_descriptors:
@@ -760,7 +794,7 @@ class QuantShieldMainWindow(QMainWindow):
             default_tickers = (
                 descriptor.inference_default_tickers
                 if len(descriptor.inference_default_tickers) >= 5
-                else list(CANONICAL_TOP_ETF_UNIVERSE)
+                else self._default_universe_for_current_size()
             )
             self._set_selected_tickers(default_tickers)
 
@@ -772,19 +806,44 @@ class QuantShieldMainWindow(QMainWindow):
             if upper and upper not in seen:
                 normalized.append(upper)
                 seen.add(upper)
-            if len(normalized) >= 10:
+            if len(normalized) >= self._max_portfolio_size:
                 break
         self._selected_tickers_state = sorted(normalized)
         self._refresh_selected_assets_table()
+
+    def _configure_selected_assets_table(self) -> None:
+        if not hasattr(self, "selected_assets_table"):
+            return
+        row_count = max(1, (self._max_portfolio_size + ASSET_GRID_COLUMNS - 1) // ASSET_GRID_COLUMNS)
+        self.selected_assets_table.setRowCount(row_count)
+        self.selected_assets_table.setColumnCount(ASSET_GRID_COLUMNS)
+        self.selected_assets_table.setFixedHeight(row_count * 24 + 10)
+
+    def _update_ticker_help_label(self) -> None:
+        if hasattr(self, "ticker_help_label"):
+            self.ticker_help_label.setText(f"Up to {self._max_portfolio_size} selected tickers are shown below.")
+
+    def _set_max_portfolio_size(self, max_portfolio_size: int, *, refresh_checkpoints: bool = True) -> None:
+        normalized_size = 50 if int(max_portfolio_size) > 10 else 10
+        size_changed = normalized_size != self._max_portfolio_size
+        self._max_portfolio_size = normalized_size
+        self._configure_selected_assets_table()
+        self._update_ticker_help_label()
+        if len(self._selected_tickers_state) > self._max_portfolio_size:
+            self._selected_tickers_state = self._selected_tickers_state[: self._max_portfolio_size]
+        self._refresh_selected_assets_table()
+        if refresh_checkpoints and size_changed and self._all_checkpoint_descriptors:
+            self._load_checkpoints()
 
     def _refresh_selected_assets_table(self) -> None:
         if not hasattr(self, "selected_assets_table"):
             return
         benchmark = self.benchmark_combo.currentText().strip().upper() if hasattr(self, "benchmark_combo") else ""
         self.selected_assets_table.clearContents()
-        for slot_index in range(10):
-            row_index = slot_index // 5
-            column_index = slot_index % 5
+        self._configure_selected_assets_table()
+        for slot_index in range(self._max_portfolio_size):
+            row_index = slot_index // ASSET_GRID_COLUMNS
+            column_index = slot_index % ASSET_GRID_COLUMNS
             ticker = self._selected_tickers_state[slot_index] if slot_index < len(self._selected_tickers_state) else ""
             item = QTableWidgetItem(ticker)
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -800,7 +859,11 @@ class QuantShieldMainWindow(QMainWindow):
         return list(self._selected_tickers_state)
 
     def _open_portfolio_editor(self) -> None:
-        default_tickers = self._current_descriptor.inference_default_tickers if self._current_descriptor is not None else list(CANONICAL_TOP_ETF_UNIVERSE)
+        default_tickers = (
+            self._current_descriptor.inference_default_tickers
+            if self._current_descriptor is not None
+            else self._default_universe_for_current_size()
+        )
         dialog = TickerSearchDialog(
             search_service=self.ticker_search_service,
             portfolio_library_service=self.portfolio_library_service,
@@ -810,6 +873,7 @@ class QuantShieldMainWindow(QMainWindow):
             duration_key=self._active_duration_key(),
             start_date=self.start_date_edit.date().toString("yyyy-MM-dd"),
             end_date=self.end_date_edit.date().toString("yyyy-MM-dd"),
+            max_count=self._max_portfolio_size,
             parent=self,
         )
         if dialog.exec():
@@ -818,7 +882,7 @@ class QuantShieldMainWindow(QMainWindow):
 
     def _set_random_portfolio(self) -> None:
         try:
-            tickers = self.ticker_search_service.random_portfolio(size=max(10, 5))
+            tickers = self.ticker_search_service.random_portfolio(size=max(self._max_portfolio_size, 5))
         except Exception as exc:
             self._show_error(f"Could not generate a random baseline: {exc}")
             return
@@ -851,6 +915,7 @@ class QuantShieldMainWindow(QMainWindow):
                 rebalance_mode=self._current_interval_mode,
                 rebalance_frequency=self._current_interval_frequency,
                 model_path=self._current_descriptor.path.as_posix() if self._current_descriptor is not None else None,
+                max_portfolio_size=self._max_portfolio_size,
             )
         except Exception as exc:
             self._show_error(f"Could not save the configuration: {exc}")
@@ -868,6 +933,8 @@ class QuantShieldMainWindow(QMainWindow):
             self._apply_saved_configuration(dialog.selected_configuration)
 
     def _apply_saved_configuration(self, configuration) -> None:
+        configured_size = configuration.max_portfolio_size or (50 if len(configuration.tickers) > 10 else 10)
+        self._set_max_portfolio_size(configured_size, refresh_checkpoints=False)
         self._set_selected_tickers(configuration.tickers)
         if configuration.starting_capital is not None:
             self.capital_input.setValue(configuration.starting_capital)
@@ -893,6 +960,10 @@ class QuantShieldMainWindow(QMainWindow):
             matched = self._match_descriptor(Path(configuration.model_path))
             if matched is not None:
                 self._apply_descriptor(matched, preserve_portfolio=True)
+            else:
+                self._load_checkpoints()
+        else:
+            self._load_checkpoints()
         self._update_interval_controls()
 
     def _open_checkpoint_dialog(self) -> None:
@@ -901,11 +972,13 @@ class QuantShieldMainWindow(QMainWindow):
             descriptors=self._all_checkpoint_descriptors,
             selected_descriptor=self._current_descriptor,
             active_duration_key=self._active_duration_key(),
+            active_max_portfolio_size=self._max_portfolio_size,
             parent=self,
         )
         if not dialog.exec() or dialog.selected_descriptor is None:
             return
         descriptor = dialog.selected_descriptor
+        self._set_max_portfolio_size(dialog.selected_max_portfolio_size, refresh_checkpoints=False)
         if descriptor.duration_key and descriptor.duration_key != self._active_duration_key():
             confirm = QMessageBox.question(
                 self,
@@ -1044,6 +1117,7 @@ class QuantShieldMainWindow(QMainWindow):
         self.equity_canvas.set_result(replay_result)
         self.equity_canvas.set_drawdown_visible(self.drawdown_toggle.isChecked())
         self.equity_canvas.set_equal_weight_visible(self.equal_weight_toggle.isChecked())
+        self.equity_canvas.set_markowitz_visible(self.markowitz_toggle.isChecked())
         self.allocation_history_canvas.set_result(replay_result)
         self.current_allocation_canvas.set_result(replay_result)
         self.timestamp_heatmap_canvas.set_result(replay_result)
@@ -1065,6 +1139,9 @@ class QuantShieldMainWindow(QMainWindow):
 
     def _on_equal_weight_toggle_changed(self, checked: bool) -> None:
         self.equity_canvas.set_equal_weight_visible(checked)
+
+    def _on_markowitz_toggle_changed(self, checked: bool) -> None:
+        self.equity_canvas.set_markowitz_visible(checked)
 
     def _on_speed_changed(self, label: str) -> None:
         if self.playback_timer.isActive():

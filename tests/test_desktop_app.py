@@ -224,6 +224,18 @@ def test_portfolio_library_service_exposes_presets(tmp_path) -> None:
     assert any(configuration.name == "Technology Leaders" for configuration in presets)
 
 
+def test_portfolio_library_service_exposes_large_presets(tmp_path) -> None:
+    service = PortfolioLibraryService(storage_path=tmp_path / "portfolios.json")
+
+    presets = service.list_preset_configurations(max_portfolio_size=50)
+
+    assert len(presets) >= 3
+    assert all(configuration.source == "preset" for configuration in presets)
+    assert all(len(configuration.tickers) == 50 for configuration in presets)
+    assert all(configuration.max_portfolio_size == 50 for configuration in presets)
+    assert any(configuration.name == "Expanded Core 50" for configuration in presets)
+
+
 def test_prepare_market_data_allows_warmup_inside_selected_window(tmp_path) -> None:
     loader = MarketDataLoader(cache_dir=tmp_path / "raw", provider=_mock_price_download)
     service = MarketDataService(loader)
@@ -317,9 +329,13 @@ def test_replay_service_daily_schedule_updates_portfolio_value(tmp_path, monkeyp
     assert len(result.frames) > 5
     assert any(not np.isclose(value, observed_values[0]) for value in observed_values[1:])
     assert "equal_weight" in result.comparison_returns.columns
+    assert "markowitz" in result.comparison_returns.columns
     assert "Equal Weight" in result.cumulative_values.columns
+    assert "Markowitz" in result.cumulative_values.columns
     assert "equal_weight_total_return" in result.metrics
+    assert "markowitz_total_return" in result.metrics
     assert "active_vs_equal_weight_total_return" in result.metrics
+    assert "active_vs_markowitz_total_return" in result.metrics
 
 
 def test_checkpoint_service_discovers_and_loads_checkpoint(tmp_path) -> None:
@@ -474,6 +490,85 @@ def test_checkpoint_service_reads_portfolio_fit_metadata(tmp_path) -> None:
     assert descriptor.model_type_label == "Fit Model"
     assert descriptor.variant_label == "Oracle Blend"
     assert descriptor.selected_epoch == 17
+
+
+def test_checkpoint_descriptor_uses_50_name_default_for_large_placeholder_model(tmp_path) -> None:
+    checkpoint_dir = tmp_path / "outputs" / "model_experiments_50_suite" / "portfolio_size_50" / "1y" / "oracle_memory"
+    checkpoint_dir.mkdir(parents=True)
+    tickers = [f"ASSET_{index:02d}" for index in range(1, 51)]
+    config = RLTrainingConfig(
+        lookback_window=63,
+        hidden_dim=224,
+        attention_heads=8,
+        attention_layers=4,
+    )
+    model = CrossAssetAttentionActorCritic(
+        num_assets=len(tickers),
+        lookback_window=config.lookback_window,
+        feature_dim=3,
+        hidden_dim=config.hidden_dim,
+        attention_heads=config.attention_heads,
+        attention_layers=config.attention_layers,
+        dropout=config.dropout,
+    )
+    torch.save(
+        {
+            "tickers": tickers,
+            "training_config": asdict(config),
+            "state_dict": model.state_dict(),
+            "duration_key": "1y",
+        },
+        checkpoint_dir / "actor_critic_policy.pt",
+    )
+
+    descriptor = CheckpointService(search_roots=[tmp_path / "outputs"]).discover_checkpoints(duration_key="1y")[0]
+
+    assert descriptor.uses_placeholder_tickers is True
+    assert descriptor.slot_count == 50
+    assert descriptor.supported_portfolio_size == 50
+    assert len(descriptor.inference_default_tickers) == 50
+
+
+def test_checkpoint_service_prefers_newest_generated_model_per_duration(tmp_path) -> None:
+    root = tmp_path / "outputs" / "model_experiments_50_suite" / "portfolio_size_50" / "1y"
+    older_dir = root / "20260409_010000_portfolio_oracle_memory_best_asset"
+    newer_dir = root / "20260409_020000_portfolio_oracle_memory_best_asset"
+    older_dir.mkdir(parents=True)
+    newer_dir.mkdir(parents=True)
+    tickers = [f"ASSET_{index:02d}" for index in range(1, 51)]
+    config = RLTrainingConfig(
+        lookback_window=63,
+        hidden_dim=224,
+        attention_heads=8,
+        attention_layers=4,
+    )
+    model = CrossAssetAttentionActorCritic(
+        num_assets=len(tickers),
+        lookback_window=config.lookback_window,
+        feature_dim=3,
+        hidden_dim=config.hidden_dim,
+        attention_heads=config.attention_heads,
+        attention_layers=config.attention_layers,
+        dropout=config.dropout,
+    )
+    payload = {
+        "tickers": tickers,
+        "training_config": asdict(config),
+        "state_dict": model.state_dict(),
+        "duration_key": "1y",
+    }
+    older_path = older_dir / "actor_critic_policy.pt"
+    newer_path = newer_dir / "actor_critic_policy.pt"
+    torch.save(payload, older_path)
+    torch.save(payload, newer_path)
+    os.utime(older_path, (1, 1))
+    os.utime(newer_path, (2, 2))
+
+    service = CheckpointService(search_roots=[tmp_path / "outputs"])
+    descriptors = [descriptor for descriptor in service.discover_checkpoints(duration_key="1y") if descriptor.slot_count == 50]
+
+    assert len(descriptors) == 1
+    assert descriptors[0].path == newer_path
 
 
 def test_replay_service_uses_treasury_rate_assumption(monkeypatch, tmp_path) -> None:
@@ -887,9 +982,11 @@ def test_equity_curve_canvas_resets_drawdown_axis_between_results() -> None:
         {
             "portfolio": [0.01, -0.02, 0.015],
             "equal_weight": [0.008, -0.01, 0.012],
+            "markowitz": [0.009, -0.012, 0.013],
             "benchmark": [0.009, -0.015, 0.011],
             "excess": [0.001, -0.005, 0.004],
             "active_vs_equal_weight": [0.002, -0.01, 0.003],
+            "active_vs_markowitz": [0.001, -0.008, 0.002],
         },
         index=pd.to_datetime(["2024-01-05", "2024-01-12", "2024-01-19"]),
     )
@@ -897,6 +994,7 @@ def test_equity_curve_canvas_resets_drawdown_axis_between_results() -> None:
         {
             "Portfolio": [101000.0, 98980.0, 100464.7],
             "Equal Weight": [100800.0, 99792.0, 100989.5],
+            "Markowitz": [100900.0, 99691.2, 100986.2],
             "Benchmark": [100900.0, 99386.5, 100479.8],
         },
         index=comparison_returns.index,
@@ -953,9 +1051,11 @@ def test_replay_summary_dialog_reports_duration_matched_risk_free_assumption() -
         {
             "portfolio": [0.01, -0.02, 0.015],
             "equal_weight": [0.008, -0.01, 0.012],
+            "markowitz": [0.009, -0.012, 0.013],
             "benchmark": [0.009, -0.015, 0.011],
             "excess": [0.001, -0.005, 0.004],
             "active_vs_equal_weight": [0.002, -0.01, 0.003],
+            "active_vs_markowitz": [0.001, -0.008, 0.002],
         },
         index=pd.to_datetime(["2024-01-05", "2024-01-12", "2024-01-19"]),
     )
@@ -963,6 +1063,7 @@ def test_replay_summary_dialog_reports_duration_matched_risk_free_assumption() -
         {
             "Portfolio": [101000.0, 98980.0, 100464.7],
             "Equal Weight": [100800.0, 99792.0, 100989.5],
+            "Markowitz": [100900.0, 99691.2, 100986.2],
             "Benchmark": [100900.0, 99386.5, 100479.8],
         },
         index=comparison_returns.index,
@@ -993,14 +1094,14 @@ def test_replay_summary_dialog_reports_duration_matched_risk_free_assumption() -
         benchmark_returns=comparison_returns["benchmark"],
         summary_table=pd.DataFrame(
             {
-                "annualized_return": [0.10, 0.08, 0.07],
-                "annualized_volatility": [0.12, 0.11, 0.10],
-                "sharpe_ratio": [0.45, 0.35, 0.30],
-                "sortino_ratio": [0.50, 0.40, 0.33],
-                "max_drawdown": [-0.09, -0.08, -0.07],
-                "calmar_ratio": [1.11, 1.00, 1.00],
+                "annualized_return": [0.10, 0.08, 0.09, 0.07],
+                "annualized_volatility": [0.12, 0.11, 0.105, 0.10],
+                "sharpe_ratio": [0.45, 0.35, 0.40, 0.30],
+                "sortino_ratio": [0.50, 0.40, 0.45, 0.33],
+                "max_drawdown": [-0.09, -0.08, -0.075, -0.07],
+                "calmar_ratio": [1.11, 1.00, 1.05, 1.00],
             },
-            index=["portfolio", "equal_weight", "benchmark"],
+            index=["portfolio", "equal_weight", "markowitz", "benchmark"],
         ),
         metrics={
             "total_return": 0.12,
@@ -1011,7 +1112,9 @@ def test_replay_summary_dialog_reports_duration_matched_risk_free_assumption() -
             "sharpe_ratio": 0.45,
             "max_drawdown": -0.09,
             "equal_weight_total_return": 0.08,
+            "markowitz_total_return": 0.095,
             "active_vs_equal_weight_total_return": 0.04,
+            "active_vs_markowitz_total_return": 0.025,
         },
         requested_tickers=["SPY", "QQQ", "GLD"],
         benchmark_ticker="SPY",
@@ -1035,3 +1138,5 @@ def test_replay_summary_dialog_reports_duration_matched_risk_free_assumption() -
     assert "1-Year Treasury" in highlights
     assert "4.25%" in highlights
     assert "U.S. Treasury daily par yield curve" in highlights
+    assert "Markowitz cumulative return" in highlights
+    assert "Active weighting vs Markowitz total return" in highlights

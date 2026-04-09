@@ -30,6 +30,8 @@ from quantshield.metrics import drawdown_series
 from quantshield.replay_durations import DEFAULT_REPLAY_DURATION_KEY, REPLAY_DURATION_PROFILES
 from quantshield_app.services import CheckpointDescriptor
 
+ALLOWED_PORTFOLIO_SIZES = (10, 50)
+
 
 class ModelPreviewCanvas(FigureCanvasQTAgg):
     """Mini equity and drawdown preview for a checkpoint descriptor."""
@@ -139,6 +141,7 @@ class CheckpointSelectionDialog(QDialog):
         descriptors: list[CheckpointDescriptor],
         selected_descriptor: CheckpointDescriptor | None = None,
         active_duration_key: str = DEFAULT_REPLAY_DURATION_KEY,
+        active_max_portfolio_size: int = 10,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -148,6 +151,7 @@ class CheckpointSelectionDialog(QDialog):
         self._all_descriptors = list(descriptors)
         self._visible_descriptors: list[CheckpointDescriptor] = []
         self.selected_descriptor: CheckpointDescriptor | None = None
+        self.selected_max_portfolio_size = 50 if int(active_max_portfolio_size) > 10 else 10
         self._selected_descriptor = selected_descriptor
 
         layout = QVBoxLayout(self)
@@ -180,6 +184,15 @@ class CheckpointSelectionDialog(QDialog):
         self.search_input.setPlaceholderText("Search by model name, variant, or tag")
         self.search_input.textChanged.connect(self._refresh_table)
         controls_row.addWidget(self.search_input, stretch=1)
+
+        self.portfolio_size_combo = QComboBox(self)
+        for size in ALLOWED_PORTFOLIO_SIZES:
+            self.portfolio_size_combo.addItem(str(size), size)
+        initial_size_index = max(0, self.portfolio_size_combo.findData(self.selected_max_portfolio_size))
+        self.portfolio_size_combo.setCurrentIndex(initial_size_index)
+        self.portfolio_size_combo.setToolTip("Maximum supported portfolio size for the selected model family.")
+        self.portfolio_size_combo.currentIndexChanged.connect(self._on_portfolio_size_changed)
+        controls_row.addWidget(self.portfolio_size_combo)
 
         self.variant_filter = QComboBox(self)
         self.variant_filter.addItem("All Variants", "")
@@ -276,8 +289,16 @@ class CheckpointSelectionDialog(QDialog):
     def _active_duration_key(self) -> str:
         return str(self.horizon_combo.currentData() or DEFAULT_REPLAY_DURATION_KEY)
 
+    def _active_portfolio_size(self) -> int:
+        return int(self.portfolio_size_combo.currentData() or 10)
+
+    def _on_portfolio_size_changed(self) -> None:
+        self.selected_max_portfolio_size = self._active_portfolio_size()
+        self._refresh_table()
+
     def _refresh_table(self) -> None:
         horizon_key = self._active_duration_key()
+        selected_portfolio_size = self._active_portfolio_size()
         search = self.search_input.text().strip().casefold()
         variant_filter = str(self.variant_filter.currentData() or "")
         type_filter = str(self.type_filter.currentData() or "")
@@ -285,6 +306,11 @@ class CheckpointSelectionDialog(QDialog):
 
         def _matches(descriptor: CheckpointDescriptor) -> bool:
             if descriptor.duration_key != horizon_key:
+                return False
+            if descriptor.uses_placeholder_tickers:
+                if descriptor.slot_count != selected_portfolio_size:
+                    return False
+            elif descriptor.slot_count > selected_portfolio_size:
                 return False
             if variant_filter and descriptor.variant_label != variant_filter:
                 return False
@@ -413,7 +439,11 @@ class CheckpointSelectionDialog(QDialog):
                 ]
             )
         )
-        holdings_scope = "Synthetic 10-slot inference" if descriptor.uses_placeholder_tickers else f"{len(descriptor.tickers)}-ticker policy"
+        holdings_scope = (
+            f"Synthetic {descriptor.slot_count}-slot inference"
+            if descriptor.uses_placeholder_tickers
+            else f"{len(descriptor.tickers)}-ticker policy"
+        )
         self.characteristics_label.setText(
             "\n".join(
                 [

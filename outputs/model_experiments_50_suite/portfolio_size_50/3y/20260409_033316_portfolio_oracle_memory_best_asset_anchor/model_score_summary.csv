@@ -1,0 +1,4 @@
+Split,benchmark_component,equal_weight_component,restricted_random_component,raw_return_component,significance_component,significance_bonus,weight_error_penalty,composite_score
+train,30.0,20.0,15.0,10.0,14.99960755491607,10.0,0.0,99.99960755491607
+validation,30.0,20.0,15.0,10.0,14.701691834759082,10.0,0.0,99.70169183475909
+all,30.0,20.0,15.0,10.0,14.999496742576142,10.0,0.0,99.99949674257614

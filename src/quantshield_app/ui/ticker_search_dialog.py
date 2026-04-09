@@ -37,6 +37,7 @@ class TickerSearchDialog(QDialog):
         start_date: str | None = None,
         end_date: str | None = None,
         minimum_count: int = 5,
+        max_count: int = 10,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -52,6 +53,9 @@ class TickerSearchDialog(QDialog):
         self.start_date = start_date
         self.end_date = end_date
         self.minimum_count = minimum_count
+        self.max_count = max(5, int(max_count))
+        self.selected_tickers = self.selected_tickers[: self.max_count]
+        self.default_tickers = self.default_tickers[: self.max_count]
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Search a ticker symbol or fund name. Build a portfolio of at least 5 tickers, then choose Save and Close."))
@@ -147,11 +151,18 @@ class TickerSearchDialog(QDialog):
         self.selected_list.clear()
         for ticker in self.selected_tickers:
             self.selected_list.addItem(QListWidgetItem(ticker))
-        self.selection_count_label.setText(f"Selected: {len(self.selected_tickers)} / {self.minimum_count}+")
+        self.selection_count_label.setText(f"Selected: {len(self.selected_tickers)} / {self.minimum_count}+ (Max {self.max_count})")
 
     def _add_ticker(self, ticker: str) -> None:
         normalized = ticker.strip().upper()
         if not normalized or normalized in self.selected_tickers:
+            return
+        if len(self.selected_tickers) >= self.max_count:
+            QMessageBox.information(
+                self,
+                "Change Portfolio",
+                f"This model mode supports up to {self.max_count} tickers. Remove one before adding another.",
+            )
             return
         self.selected_tickers.append(normalized)
         self._refresh_selected_list()
@@ -208,7 +219,7 @@ class TickerSearchDialog(QDialog):
         self._refresh_selected_list()
 
     def _load_preset_portfolio(self) -> None:
-        presets = self.portfolio_library_service.list_preset_configurations()
+        presets = self.portfolio_library_service.list_preset_configurations(max_portfolio_size=self.max_count)
         dialog = LoadPortfolioDialog(
             configurations=presets,
             window_title="Portfolio Presets",
@@ -216,7 +227,7 @@ class TickerSearchDialog(QDialog):
             parent=self,
         )
         if dialog.exec() and dialog.selected_configuration is not None:
-            self.selected_tickers = list(dialog.selected_configuration.tickers)
+            self.selected_tickers = list(dialog.selected_configuration.tickers[: self.max_count])
             self._refresh_selected_list()
 
     def _open_fit_model_dialog(self) -> None:
@@ -231,7 +242,7 @@ class TickerSearchDialog(QDialog):
         dialog.exec()
 
     def _accept_and_close(self) -> None:
-        self.selected_tickers = self._normalize_tickers(self.selected_tickers)
+        self.selected_tickers = self._normalize_tickers(self.selected_tickers)[: self.max_count]
         if len(self.selected_tickers) < self.minimum_count:
             QMessageBox.warning(
                 self,

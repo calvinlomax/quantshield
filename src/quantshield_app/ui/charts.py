@@ -51,18 +51,22 @@ class EquityCurveCanvas(BaseReplayCanvas):
         self._dates: pd.DatetimeIndex | None = None
         self._portfolio_values: np.ndarray | None = None
         self._equal_weight_values: np.ndarray | None = None
+        self._markowitz_values: np.ndarray | None = None
         self._benchmark_values: np.ndarray | None = None
         self._portfolio_drawdown: np.ndarray | None = None
         self._portfolio_line = None
         self._equal_weight_line = None
+        self._markowitz_line = None
         self._benchmark_line = None
         self._portfolio_marker = None
         self._equal_weight_marker = None
+        self._markowitz_marker = None
         self._benchmark_marker = None
         self._drawdown_axis = None
         self._drawdown_line = None
         self._drawdown_visible = False
         self._equal_weight_visible = False
+        self._markowitz_visible = False
 
     def set_result(self, result: PolicyReplayResult) -> None:
         values = result.cumulative_values.copy()
@@ -72,21 +76,26 @@ class EquityCurveCanvas(BaseReplayCanvas):
         self._drawdown_line = None
         self._portfolio_line = None
         self._equal_weight_line = None
+        self._markowitz_line = None
         self._benchmark_line = None
         self._portfolio_marker = None
         self._equal_weight_marker = None
+        self._markowitz_marker = None
         self._benchmark_marker = None
         self._dates = pd.DatetimeIndex(values.index)
         self._portfolio_values = values["Portfolio"].to_numpy(dtype=float)
         self._equal_weight_values = values["Equal Weight"].to_numpy(dtype=float) if "Equal Weight" in values.columns else None
+        self._markowitz_values = values["Markowitz"].to_numpy(dtype=float) if "Markowitz" in values.columns else None
         self._benchmark_values = values["Benchmark"].to_numpy(dtype=float)
         self._portfolio_drawdown = drawdown_series(result.comparison_returns["portfolio"]).to_numpy(dtype=float)
 
         self._portfolio_line, = self.axes.plot([], [], linewidth=1.8, label="Portfolio")
         self._equal_weight_line, = self.axes.plot([], [], linewidth=1.4, linestyle=":", color="#2ca02c", label="Equal Weight")
+        self._markowitz_line, = self.axes.plot([], [], linewidth=1.4, linestyle="-.", color="#9467bd", label="Markowitz")
         self._benchmark_line, = self.axes.plot([], [], linewidth=1.5, label=f"{result.benchmark_ticker} Benchmark")
         self._portfolio_marker, = self.axes.plot([], [], marker="o", linestyle="", markersize=4)
         self._equal_weight_marker, = self.axes.plot([], [], marker="o", linestyle="", markersize=3.5, color="#2ca02c")
+        self._markowitz_marker, = self.axes.plot([], [], marker="o", linestyle="", markersize=3.5, color="#9467bd")
         self._benchmark_marker, = self.axes.plot([], [], marker="o", linestyle="", markersize=4)
 
         if len(self._dates) > 0:
@@ -95,6 +104,9 @@ class EquityCurveCanvas(BaseReplayCanvas):
             if self._equal_weight_values is not None:
                 series_min.append(float(np.min(self._equal_weight_values)))
                 series_max.append(float(np.max(self._equal_weight_values)))
+            if self._markowitz_values is not None:
+                series_min.append(float(np.min(self._markowitz_values)))
+                series_max.append(float(np.max(self._markowitz_values)))
             ymin = min(series_min)
             ymax = max(series_max)
             margin = max((ymax - ymin) * 0.08, max(ymax, 1.0) * 0.03)
@@ -111,6 +123,7 @@ class EquityCurveCanvas(BaseReplayCanvas):
         self._drawdown_axis.set_ylim(-1.0, 0.05)
         self._drawdown_axis.set_visible(self._drawdown_visible)
         self.set_equal_weight_visible(self._equal_weight_visible)
+        self.set_markowitz_visible(self._markowitz_visible)
         self.update_frame(0)
 
     def set_drawdown_visible(self, visible: bool) -> None:
@@ -128,6 +141,15 @@ class EquityCurveCanvas(BaseReplayCanvas):
         self._refresh_legend()
         self.draw_idle()
 
+    def set_markowitz_visible(self, visible: bool) -> None:
+        self._markowitz_visible = bool(visible)
+        if self._markowitz_line is not None:
+            self._markowitz_line.set_visible(self._markowitz_visible)
+        if self._markowitz_marker is not None:
+            self._markowitz_marker.set_visible(self._markowitz_visible)
+        self._refresh_legend()
+        self.draw_idle()
+
     def update_frame(self, frame_index: int) -> None:
         if self._dates is None or self._portfolio_values is None or self._benchmark_values is None:
             return
@@ -135,15 +157,20 @@ class EquityCurveCanvas(BaseReplayCanvas):
         visible_dates = self._dates[: clamped + 1]
         portfolio_values = self._portfolio_values[: clamped + 1]
         equal_weight_values = self._equal_weight_values[: clamped + 1] if self._equal_weight_values is not None else None
+        markowitz_values = self._markowitz_values[: clamped + 1] if self._markowitz_values is not None else None
         benchmark_values = self._benchmark_values[: clamped + 1]
 
         self._portfolio_line.set_data(visible_dates, portfolio_values)
         if self._equal_weight_line is not None and equal_weight_values is not None:
             self._equal_weight_line.set_data(visible_dates, equal_weight_values)
+        if self._markowitz_line is not None and markowitz_values is not None:
+            self._markowitz_line.set_data(visible_dates, markowitz_values)
         self._benchmark_line.set_data(visible_dates, benchmark_values)
         self._portfolio_marker.set_data([visible_dates[-1]], [portfolio_values[-1]])
         if self._equal_weight_marker is not None and equal_weight_values is not None:
             self._equal_weight_marker.set_data([visible_dates[-1]], [equal_weight_values[-1]])
+        if self._markowitz_marker is not None and markowitz_values is not None:
+            self._markowitz_marker.set_data([visible_dates[-1]], [markowitz_values[-1]])
         self._benchmark_marker.set_data([visible_dates[-1]], [benchmark_values[-1]])
         if self._drawdown_axis is not None and self._drawdown_line is not None and self._portfolio_drawdown is not None:
             self._drawdown_line.set_data(visible_dates, self._portfolio_drawdown[: clamped + 1])
@@ -155,6 +182,8 @@ class EquityCurveCanvas(BaseReplayCanvas):
             handles.append(self._portfolio_line)
         if self._equal_weight_visible and self._equal_weight_line is not None:
             handles.append(self._equal_weight_line)
+        if self._markowitz_visible and self._markowitz_line is not None:
+            handles.append(self._markowitz_line)
         if self._benchmark_line is not None:
             handles.append(self._benchmark_line)
         if handles:

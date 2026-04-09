@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from quantshield.optimization import OptimizationConfig, bounded_equal_weight, optimize_portfolio
+from quantshield.risk import RiskConfig, estimate_risk
 from quantshield.metrics import cumulative_returns, performance_summary
 from quantshield.rl import LoadedPolicyCheckpoint, predict_policy_weights
 from quantshield.utils import generate_schedule, infer_periods_per_year
@@ -113,8 +115,10 @@ class ReplayService:
         daily_weights_records: list[pd.Series] = []
         rebalance_weight_records: list[pd.Series] = []
         previous_weights: pd.Series | None = None
+        previous_markowitz_weights: pd.Series | None = None
         portfolio_value = float(starting_capital)
         equal_weight_value = float(starting_capital)
+        markowitz_value = float(starting_capital)
         benchmark_value = float(starting_capital)
         benchmark_shares: int | None = None
         benchmark_cash = float(starting_capital)
@@ -122,6 +126,15 @@ class ReplayService:
             np.full(len(portfolio_tickers), 1.0 / len(portfolio_tickers), dtype=float),
             index=portfolio_tickers,
         )
+        markowitz_config = OptimizationConfig(
+            objective="mean_variance",
+            risk_aversion=3.0,
+            long_only=True,
+            min_weight=0.0,
+            max_weight=1.0,
+            fallback_to_equal_weight=True,
+        )
+        risk_config = RiskConfig(mean_estimator="historical", covariance_estimator="ledoit_wolf", annualize=True)
 
         for position, rebalance_date in enumerate(rebalance_dates):
             window = market_data.returns.loc[:rebalance_date, portfolio_tickers].iloc[-checkpoint.training_config.lookback_window :]
@@ -130,22 +143,31 @@ class ReplayService:
 
             weights = predict_policy_weights(checkpoint, window, tickers=portfolio_tickers)
             turnover = 0.0 if previous_weights is None else float(np.abs(weights - previous_weights).sum())
+            markowitz_weights = self._compute_markowitz_weights(
+                window,
+                previous_weights=previous_markowitz_weights,
+                risk_config=risk_config,
+                optimization_config=markowitz_config,
+            )
 
             rebalance_prices = replay_prices.loc[rebalance_date, portfolio_tickers].astype(float)
-            safe_rebalance_prices = rebalance_prices.replace(0.0, np.nan)
-            target_notional = portfolio_value * weights
-            share_counts = (target_notional / safe_rebalance_prices).fillna(0.0).clip(lower=0.0).apply(np.floor).astype(int)
-            invested_value = float((share_counts * rebalance_prices).sum())
-            cash_balance = float(portfolio_value - invested_value)
-            actual_rebalance_weights = ((share_counts * rebalance_prices) / portfolio_value).fillna(0.0) if portfolio_value > 0.0 else weights * 0.0
+            share_counts, cash_balance, actual_rebalance_weights = self._rebalance_integer_portfolio(
+                portfolio_value,
+                weights,
+                rebalance_prices,
+            )
             rebalance_weight_records.append(actual_rebalance_weights.rename(rebalance_date))
 
-            equal_target_notional = equal_weight_value * equal_weight_target
-            equal_share_counts = (
-                (equal_target_notional / safe_rebalance_prices).fillna(0.0).clip(lower=0.0).apply(np.floor).astype(int)
+            equal_share_counts, equal_cash_balance, _ = self._rebalance_integer_portfolio(
+                equal_weight_value,
+                equal_weight_target,
+                rebalance_prices,
             )
-            equal_invested_value = float((equal_share_counts * rebalance_prices).sum())
-            equal_cash_balance = float(equal_weight_value - equal_invested_value)
+            markowitz_share_counts, markowitz_cash_balance, _ = self._rebalance_integer_portfolio(
+                markowitz_value,
+                markowitz_weights,
+                rebalance_prices,
+            )
 
             if benchmark_shares is None:
                 benchmark_rebalance_price = float(replay_prices.loc[rebalance_date, benchmark])
@@ -167,6 +189,7 @@ class ReplayService:
 
             previous_portfolio_value = float(portfolio_value)
             previous_equal_weight_value = float(equal_weight_value)
+            previous_markowitz_value = float(markowitz_value)
             previous_benchmark_value = float(benchmark_value)
             for offset, (date, price_row) in enumerate(holding_period_prices.iterrows()):
                 asset_prices = price_row.loc[portfolio_tickers].astype(float)
@@ -176,6 +199,8 @@ class ReplayService:
 
                 equal_asset_values = equal_share_counts.astype(float) * asset_prices
                 equal_weight_value = float(equal_cash_balance + equal_asset_values.sum())
+                markowitz_asset_values = markowitz_share_counts.astype(float) * asset_prices
+                markowitz_value = float(markowitz_cash_balance + markowitz_asset_values.sum())
 
                 benchmark_price = float(price_row.loc[benchmark])
                 benchmark_value = float(benchmark_cash + (benchmark_shares or 0) * benchmark_price)
@@ -185,6 +210,11 @@ class ReplayService:
                     if previous_equal_weight_value > 0.0
                     else 0.0
                 )
+                markowitz_return = (
+                    markowitz_value / previous_markowitz_value - 1.0
+                    if previous_markowitz_value > 0.0
+                    else 0.0
+                )
                 benchmark_return = (benchmark_value / previous_benchmark_value - 1.0) if previous_benchmark_value > 0.0 else 0.0
 
                 comparison_rows.append(
@@ -192,9 +222,11 @@ class ReplayService:
                         "Date": date,
                         "portfolio": portfolio_return,
                         "equal_weight": equal_weight_return,
+                        "markowitz": markowitz_return,
                         "benchmark": benchmark_return,
                         "excess": portfolio_return - benchmark_return,
                         "active_vs_equal_weight": portfolio_return - equal_weight_return,
+                        "active_vs_markowitz": portfolio_return - markowitz_return,
                     }
                 )
                 daily_weights_records.append(current_weights.rename(date))
@@ -215,9 +247,11 @@ class ReplayService:
                 )
                 previous_portfolio_value = portfolio_value
                 previous_equal_weight_value = equal_weight_value
+                previous_markowitz_value = markowitz_value
                 previous_benchmark_value = benchmark_value
 
             previous_weights = weights
+            previous_markowitz_weights = markowitz_weights
 
         if not frames:
             raise ValueError(
@@ -230,9 +264,16 @@ class ReplayService:
         comparison_returns.index = pd.to_datetime(comparison_returns.index)
         comparison_returns.index.name = "Date"
         cumulative_values = cumulative_returns(
-            comparison_returns[["portfolio", "equal_weight", "benchmark"]],
+            comparison_returns[["portfolio", "equal_weight", "markowitz", "benchmark"]],
             start_value=starting_capital,
-        ).rename(columns={"portfolio": "Portfolio", "equal_weight": "Equal Weight", "benchmark": "Benchmark"})
+        ).rename(
+            columns={
+                "portfolio": "Portfolio",
+                "equal_weight": "Equal Weight",
+                "markowitz": "Markowitz",
+                "benchmark": "Benchmark",
+            }
+        )
 
         weights_history = pd.DataFrame(rebalance_weight_records)
         weights_history.index.name = "RebalanceDate"
@@ -245,7 +286,7 @@ class ReplayService:
             as_of_date=market_data.start_date,
         )
         summary = performance_summary(
-            comparison_returns[["portfolio", "equal_weight", "benchmark"]],
+            comparison_returns[["portfolio", "equal_weight", "markowitz", "benchmark"]],
             periods_per_year=periods_per_year,
             risk_free_rate=risk_free_assumption.annual_rate,
         )
@@ -261,6 +302,11 @@ class ReplayService:
             "equal_weight_annualized_volatility": float(summary.loc["equal_weight", "annualized_volatility"]),
             "equal_weight_sharpe_ratio": float(summary.loc["equal_weight", "sharpe_ratio"]),
             "equal_weight_max_drawdown": float(summary.loc["equal_weight", "max_drawdown"]),
+            "markowitz_total_return": float(cumulative_values["Markowitz"].iloc[-1] / starting_capital - 1.0),
+            "markowitz_annualized_return": float(summary.loc["markowitz", "annualized_return"]),
+            "markowitz_annualized_volatility": float(summary.loc["markowitz", "annualized_volatility"]),
+            "markowitz_sharpe_ratio": float(summary.loc["markowitz", "sharpe_ratio"]),
+            "markowitz_max_drawdown": float(summary.loc["markowitz", "max_drawdown"]),
             "benchmark_total_return": float(cumulative_values["Benchmark"].iloc[-1] / starting_capital - 1.0),
             "benchmark_annualized_return": float(summary.loc["benchmark", "annualized_return"]),
             "excess_total_return": float(
@@ -270,6 +316,10 @@ class ReplayService:
             "active_vs_equal_weight_total_return": float(
                 cumulative_values["Portfolio"].iloc[-1] / starting_capital
                 - cumulative_values["Equal Weight"].iloc[-1] / starting_capital
+            ),
+            "active_vs_markowitz_total_return": float(
+                cumulative_values["Portfolio"].iloc[-1] / starting_capital
+                - cumulative_values["Markowitz"].iloc[-1] / starting_capital
             ),
         }
 
@@ -302,3 +352,47 @@ class ReplayService:
         if len(normalized) < minimum_count:
             raise ValueError(f"Select at least {minimum_count} tickers for policy replay.")
         return normalized
+
+    @staticmethod
+    def _rebalance_integer_portfolio(
+        current_value: float,
+        target_weights: pd.Series,
+        prices: pd.Series,
+    ) -> tuple[pd.Series, float, pd.Series]:
+        safe_prices = prices.replace(0.0, np.nan)
+        target_notional = float(current_value) * target_weights.astype(float)
+        share_counts = (target_notional / safe_prices).fillna(0.0).clip(lower=0.0).apply(np.floor).astype(int)
+        invested_value = float((share_counts * prices).sum())
+        cash_balance = float(current_value - invested_value)
+        actual_weights = (
+            ((share_counts * prices) / current_value).fillna(0.0)
+            if current_value > 0.0
+            else target_weights.astype(float) * 0.0
+        )
+        return share_counts, cash_balance, actual_weights
+
+    @staticmethod
+    def _compute_markowitz_weights(
+        window: pd.DataFrame,
+        *,
+        previous_weights: pd.Series | None,
+        risk_config: RiskConfig,
+        optimization_config: OptimizationConfig,
+    ) -> pd.Series:
+        periods_per_year = infer_periods_per_year(window.index, default=252)
+        try:
+            risk_estimate = estimate_risk(window, risk_config, periods_per_year=periods_per_year)
+            result = optimize_portfolio(
+                risk_estimate.mean,
+                risk_estimate.covariance,
+                optimization_config,
+                previous_weights=previous_weights,
+            )
+            return result.weights.reindex(window.columns).fillna(0.0)
+        except Exception:
+            return bounded_equal_weight(
+                list(window.columns),
+                optimization_config.min_weight,
+                optimization_config.max_weight,
+                long_only=optimization_config.long_only,
+            ).reindex(window.columns).fillna(0.0)

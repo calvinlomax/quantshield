@@ -1,0 +1,2 @@
+Index,name,duration_key,tickers,benchmark_ticker,rebalance_frequency,lookback_window,candidate_mode,selected_candidate,selected_epoch,model_path
+0,3mo_20260409_013943_benchmark_beater_round01,3mo,"['VOO', 'IVV', 'SPY', 'VTI', 'QQQ', 'VEA', 'VUG', 'GLD', 'IEFA', 'VTV']",SPY,3B,16,standard,portfolio_oracle_single_160x4x3,5,/Users/calvinlomax/Desktop/QuantShield/outputs/model_experiments/3mo/20260409_013943_benchmark_beater_round01/actor_critic_policy.pt

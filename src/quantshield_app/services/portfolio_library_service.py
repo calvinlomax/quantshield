@@ -6,6 +6,14 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
+from quantshield.universe import (
+    CANONICAL_LARGE_PORTFOLIO_UNIVERSE_A,
+    CANONICAL_LARGE_PORTFOLIO_UNIVERSE_B,
+    CANONICAL_LARGE_PORTFOLIO_UNIVERSE_C,
+    CANONICAL_TOP_50_UNIVERSE,
+    CANONICAL_TOP_ETF_UNIVERSE,
+)
+
 
 DEFAULT_PORTFOLIO_LIBRARY_PATH = Path("outputs/app_state/portfolios.json")
 
@@ -24,6 +32,7 @@ class SavedConfiguration:
     rebalance_mode: str | None = None
     rebalance_frequency: str | None = None
     model_path: str | None = None
+    max_portfolio_size: int | None = None
     source: str = "saved"
     notes: str | None = None
 
@@ -31,7 +40,7 @@ class SavedConfiguration:
 SavedPortfolio = SavedConfiguration
 
 
-PRESET_CONFIGURATION_DEFINITIONS: tuple[tuple[str, list[str], str], ...] = (
+PRESET_CONFIGURATION_DEFINITIONS_10: tuple[tuple[str, list[str], str], ...] = (
     (
         "Technology Leaders",
         ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "CRM", "ADBE", "AMD", "NOW", "QCOM"],
@@ -64,6 +73,24 @@ PRESET_CONFIGURATION_DEFINITIONS: tuple[tuple[str, list[str], str], ...] = (
     ),
 )
 
+PRESET_CONFIGURATION_DEFINITIONS_50: tuple[tuple[str, list[str], str], ...] = (
+    (
+        "Expanded Core 50",
+        list(CANONICAL_TOP_50_UNIVERSE),
+        "Ten liquid core ETFs plus the long-history 40-name default equity basket.",
+    ),
+    (
+        "Expanded Quality 50",
+        [*CANONICAL_TOP_ETF_UNIVERSE, *CANONICAL_LARGE_PORTFOLIO_UNIVERSE_A],
+        "Core ETFs paired with an industrial, infrastructure, and quality-growth stock mix.",
+    ),
+    (
+        "Expanded Growth 50",
+        [*CANONICAL_TOP_ETF_UNIVERSE, *CANONICAL_LARGE_PORTFOLIO_UNIVERSE_B],
+        "Core ETFs paired with a higher-beta growth and quality stock mix.",
+    ),
+)
+
 
 class PortfolioLibraryService:
     """Store and load named desktop configurations from a local JSON file."""
@@ -78,18 +105,20 @@ class PortfolioLibraryService:
         configurations = [self._configuration_from_payload(name, details) for name, details in raw_configurations.items()]
         return sorted(configurations, key=lambda configuration: configuration.name.casefold())
 
-    def list_preset_configurations(self) -> list[SavedConfiguration]:
+    def list_preset_configurations(self, *, max_portfolio_size: int = 10) -> list[SavedConfiguration]:
         """Return the built-in preset portfolios available in the desktop app."""
+        definitions = PRESET_CONFIGURATION_DEFINITIONS_50 if int(max_portfolio_size) > 10 else PRESET_CONFIGURATION_DEFINITIONS_10
         presets = [
             SavedConfiguration(
                 name=name,
                 tickers=self._normalize_tickers(tickers),
                 benchmark_ticker="SPY",
                 duration_key="1y",
+                max_portfolio_size=int(max_portfolio_size),
                 source="preset",
                 notes=notes,
             )
-            for name, tickers, notes in PRESET_CONFIGURATION_DEFINITIONS
+            for name, tickers, notes in definitions
         ]
         return sorted(presets, key=lambda configuration: configuration.name.casefold())
 
@@ -106,6 +135,7 @@ class PortfolioLibraryService:
         rebalance_mode: str | None = None,
         rebalance_frequency: str | None = None,
         model_path: str | None = None,
+        max_portfolio_size: int | None = None,
     ) -> SavedConfiguration:
         """Persist a named configuration, overwriting any existing entry with the same name."""
         normalized_name = name.strip()
@@ -126,6 +156,7 @@ class PortfolioLibraryService:
             rebalance_mode=self._normalize_optional_text(rebalance_mode),
             rebalance_frequency=self._normalize_optional_text(rebalance_frequency),
             model_path=self._normalize_optional_text(model_path),
+            max_portfolio_size=self._coerce_optional_int(max_portfolio_size),
             source="saved",
         )
 
@@ -179,6 +210,7 @@ class PortfolioLibraryService:
             rebalance_mode=self._normalize_optional_text(payload.get("rebalance_mode")),
             rebalance_frequency=self._normalize_optional_text(payload.get("rebalance_frequency")),
             model_path=self._normalize_optional_text(payload.get("model_path")),
+            max_portfolio_size=self._coerce_optional_int(payload.get("max_portfolio_size")),
             source=self._normalize_optional_text(payload.get("source")) or "saved",
             notes=self._normalize_optional_text(payload.get("notes")),
         )
@@ -195,6 +227,7 @@ class PortfolioLibraryService:
             "rebalance_mode": configuration.rebalance_mode,
             "rebalance_frequency": configuration.rebalance_frequency,
             "model_path": configuration.model_path,
+            "max_portfolio_size": configuration.max_portfolio_size,
             "source": configuration.source,
             "notes": configuration.notes,
         }
@@ -229,3 +262,9 @@ class PortfolioLibraryService:
         if value in (None, ""):
             return None
         return float(value)
+
+    @staticmethod
+    def _coerce_optional_int(value: object) -> int | None:
+        if value in (None, ""):
+            return None
+        return int(value)

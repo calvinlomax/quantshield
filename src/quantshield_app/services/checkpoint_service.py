@@ -13,17 +13,19 @@ import torch
 
 from quantshield.replay_durations import DEFAULT_REPLAY_DURATION_KEY, REPLAY_DURATION_PROFILES, checkpoint_root_for_duration
 from quantshield.rl import LoadedPolicyCheckpoint, load_actor_critic_checkpoint
-from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE
+from quantshield.universe import CANONICAL_TOP_50_UNIVERSE, CANONICAL_TOP_ETF_UNIVERSE
 
 DEFAULT_CHECKPOINT_ROOTS = (
     *(profile.checkpoint_root for profile in REPLAY_DURATION_PROFILES),
     "outputs/model_experiments",
+    "outputs/model_experiments_50_suite",
     "outputs/portfolio_model_fits",
     "outputs/rl_policy",
 )
 PLACEHOLDER_TICKER_PATTERN = re.compile(r"^ASSET_\d+$")
 SELECTED_CANDIDATE_PATTERN = re.compile(r"^Selected candidate:\s+(.+)$", re.MULTILINE)
 SELECTED_EPOCH_PATTERN = re.compile(r"^Selected epoch:\s+(\d+)$", re.MULTILINE)
+GENERATED_RUN_PREFIX_PATTERN = re.compile(r"^\d{8}_\d{6}_(.+)$")
 
 DURATION_FOCUS_LABELS = {
     "1mo": "Tactical 1-Month",
@@ -84,7 +86,18 @@ class CheckpointDescriptor:
 
     @property
     def inference_default_tickers(self) -> list[str]:
-        return list(CANONICAL_TOP_ETF_UNIVERSE) if self.uses_placeholder_tickers else list(self.tickers)
+        if not self.uses_placeholder_tickers:
+            return list(self.tickers)
+        source_universe = CANONICAL_TOP_50_UNIVERSE if len(self.tickers) > 10 else CANONICAL_TOP_ETF_UNIVERSE
+        return list(source_universe[: len(self.tickers)])
+
+    @property
+    def slot_count(self) -> int:
+        return len(self.tickers)
+
+    @property
+    def supported_portfolio_size(self) -> int:
+        return 50 if self.slot_count > 10 else 10
 
     @property
     def display_name(self) -> str:
@@ -107,6 +120,8 @@ class CheckpointDescriptor:
             return "Portfolio Fit"
         if "candidate_models" in self.path.parts:
             return "Candidate"
+        if "model_experiments_50_suite" in self.path.parts:
+            return "Built-in"
         if "replay_checkpoint_suites" in self.path.parts:
             return "Built-in"
         return "Custom"
@@ -117,6 +132,8 @@ class CheckpointDescriptor:
             return "Fit Model"
         if "candidate_models" in self.path.parts:
             return "Candidate Model"
+        if "model_experiments_50_suite" in self.path.parts:
+            return "Core Model"
         if "replay_checkpoint_suites" in self.path.parts:
             return "Core Model"
         return "Custom Horizon"
@@ -215,6 +232,8 @@ class CheckpointService:
             if not root.exists():
                 continue
             for path in root.rglob("actor_critic_policy.pt"):
+                if "outputs/model_experiments/portfolio_size_50" in path.as_posix():
+                    continue
                 resolved = path.resolve()
                 if resolved not in seen:
                     seen.add(resolved)
@@ -223,6 +242,7 @@ class CheckpointService:
         descriptors: list[CheckpointDescriptor] = []
         for path in candidates:
             descriptors.append(self._read_descriptor(path))
+        descriptors = self._deduplicate_descriptors(descriptors)
 
         descriptors.sort(
             key=lambda descriptor: (
@@ -233,6 +253,34 @@ class CheckpointService:
             )
         )
         return descriptors
+
+    @staticmethod
+    def _deduplicate_descriptors(descriptors: list[CheckpointDescriptor]) -> list[CheckpointDescriptor]:
+        """Keep the newest descriptor for repeated generated model families."""
+        deduped: dict[tuple[object, ...], CheckpointDescriptor] = {}
+        ordered: list[CheckpointDescriptor] = []
+        for descriptor in sorted(descriptors, key=lambda value: value.updated_at, reverse=True):
+            should_dedupe = descriptor.source_label != "Portfolio Fit"
+            dedupe_key = (
+                descriptor.duration_key,
+                CheckpointService._descriptor_family_name(descriptor),
+                descriptor.slot_count,
+                descriptor.source_label,
+            )
+            if should_dedupe and dedupe_key in deduped:
+                continue
+            deduped[dedupe_key] = descriptor
+            ordered.append(descriptor)
+        return ordered
+
+    @staticmethod
+    def _descriptor_family_name(descriptor: CheckpointDescriptor) -> str:
+        if descriptor.candidate_name:
+            return descriptor.candidate_name
+        match = GENERATED_RUN_PREFIX_PATTERN.match(descriptor.path.parent.name)
+        if match is not None:
+            return match.group(1)
+        return descriptor.path.parent.name
 
     def load_checkpoint(self, checkpoint_path: str | Path, *, device: str | None = None) -> LoadedPolicyCheckpoint:
         """Load a full checkpoint for inference."""

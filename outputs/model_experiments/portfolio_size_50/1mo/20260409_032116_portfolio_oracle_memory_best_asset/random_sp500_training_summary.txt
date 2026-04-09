@@ -1,0 +1,18 @@
+Oracle Memory Model: portfolio_oracle_memory_best_asset
+Training horizon: 1mo
+Benchmark: SPY
+Selected candidate: portfolio_oracle_memory_best_asset
+Selected epoch: 0
+
+Benchmark summary:
+           samples benchmark_mean_raw_return equal_weight_mean_raw_return restricted_random_mean_raw_return policy_mean_raw_return policy_mean_excess_return policy_mean_excess_vs_equal_weight policy_mean_excess_vs_restricted_random t_statistic  p_value significant_outperformance equal_weight_t_statistic equal_weight_p_value equal_weight_significant_outperformance restricted_random_t_statistic restricted_random_p_value restricted_random_significant_outperformance
+Split                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+train          188                  0.001279                     0.000906                          0.001023               0.051469                  0.050190                           0.050563                                0.050446   17.545189 0.000000                       True                18.183787             0.000000                                    True                     18.347300                  0.000000                                         True
+validation      48                 -0.001013                    -0.000981                         -0.000897               0.058880                  0.059893                           0.059861                                0.059778    9.466475 0.000000                       True                10.044205             0.000000                                    True                      9.937774                  0.000000                                         True
+all            236                  0.000813                     0.000522                          0.000632               0.052976                  0.052164                           0.052454                                0.052344   19.886453 0.000000                       True                20.724929             0.000000                                    True                     20.814732                  0.000000                                         True
+
+Benchmark ETF qualification:
+     split  beats_all_tickers  significant_vs_all_tickers  min_mean_excess_return  mean_mean_excess_return
+     train               True                        True                0.047393                 0.050563
+validation               True                        True                0.055178                 0.059861
+       all               True                        True                0.049720                 0.052454
