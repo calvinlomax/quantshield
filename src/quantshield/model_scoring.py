@@ -52,6 +52,10 @@ def build_model_score_summary(
             _safe_value(benchmark_row, "policy_mean_excess_vs_restricted_random"),
             scale=0.010,
         )
+        markowitz_component = 25.0 * _bounded_signal(
+            _safe_value(benchmark_row, "policy_mean_excess_vs_markowitz"),
+            scale=0.010,
+        )
         raw_return_component = 10.0 * _bounded_signal(
             _safe_value(evaluation_row, "policy_mean_raw_return"),
             scale=0.010,
@@ -60,6 +64,7 @@ def build_model_score_summary(
             _safe_value(benchmark_row, "t_statistic"),
             _safe_value(benchmark_row, "equal_weight_t_statistic"),
             _safe_value(benchmark_row, "restricted_random_t_statistic"),
+            _safe_value(benchmark_row, "markowitz_t_statistic"),
         ]
         average_t_statistic = float(np.mean(t_statistics))
         significance_component = 15.0 * _bounded_signal(average_t_statistic, scale=3.0)
@@ -69,6 +74,7 @@ def build_model_score_summary(
                     _safe_flag(benchmark_row, "significant_outperformance"),
                     _safe_flag(benchmark_row, "equal_weight_significant_outperformance"),
                     _safe_flag(benchmark_row, "restricted_random_significant_outperformance"),
+                    _safe_flag(benchmark_row, "markowitz_significant_outperformance"),
                 ]
             )
         )
@@ -77,6 +83,7 @@ def build_model_score_summary(
             benchmark_component
             + equal_weight_component
             + restricted_random_component
+            + markowitz_component
             + raw_return_component
             + significance_component
             + significance_bonus
@@ -86,6 +93,7 @@ def build_model_score_summary(
             "benchmark_component": benchmark_component,
             "equal_weight_component": equal_weight_component,
             "restricted_random_component": restricted_random_component,
+            "markowitz_component": markowitz_component,
             "raw_return_component": raw_return_component,
             "significance_component": significance_component,
             "significance_bonus": significance_bonus,

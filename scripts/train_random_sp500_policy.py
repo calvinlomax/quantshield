@@ -63,6 +63,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="Random seed for universe sampling and training.")
     parser.add_argument("--device", help="Optional torch device override.")
     parser.add_argument("--force-refresh", action="store_true", help="Refetch yfinance prices even if cached.")
+    parser.add_argument("--reward-weight-raw", type=float, default=0.05, help="Reward weight for raw portfolio return.")
+    parser.add_argument(
+        "--reward-weight-vs-benchmark",
+        type=float,
+        default=0.20,
+        help="Reward weight for excess return versus the benchmark ETF.",
+    )
+    parser.add_argument(
+        "--reward-weight-vs-equal-weight",
+        type=float,
+        default=0.10,
+        help="Reward weight for excess return versus the equal-weight baseline.",
+    )
+    parser.add_argument(
+        "--reward-weight-vs-restricted-random",
+        type=float,
+        default=0.10,
+        help="Reward weight for excess return versus the restricted-random baseline.",
+    )
+    parser.add_argument(
+        "--reward-weight-vs-markowitz",
+        type=float,
+        default=0.55,
+        help="Reward weight for excess return versus the long-only mean-variance baseline.",
+    )
     return parser.parse_args()
 
 
@@ -218,6 +243,7 @@ def _selection_key(result) -> tuple[float, ...]:
     return (
         float(all_split["composite_score"]),
         float(validation["composite_score"]),
+        float(benchmark["policy_mean_excess_vs_markowitz"]),
         float(benchmark["policy_mean_excess_return"]),
         float(benchmark["policy_mean_excess_vs_equal_weight"]),
         float(benchmark["policy_mean_excess_vs_restricted_random"]),
@@ -246,6 +272,13 @@ def _write_training_summary(
         f"Rebalance frequency: {args.rebalance_frequency}",
         f"Objectives: {', '.join(args.objectives)}",
         f"Objective suite priors: {args.objective_suite_root}",
+        "Reward weights:",
+        (
+            f"  raw={args.reward_weight_raw:0.2f}, benchmark={args.reward_weight_vs_benchmark:0.2f}, "
+            f"equal_weight={args.reward_weight_vs_equal_weight:0.2f}, "
+            f"restricted_random={args.reward_weight_vs_restricted_random:0.2f}, "
+            f"markowitz={args.reward_weight_vs_markowitz:0.2f}"
+        ),
         f"Sampled ticker count: {summary['sampled_ticker_count']}",
         f"Selected candidate: {best_name}",
         f"Selected epoch: {best_result.selected_epoch}",
@@ -298,6 +331,11 @@ def main() -> None:
             force_refresh=args.force_refresh,
             objectives=tuple(args.objectives),
             objective_suite_root=args.objective_suite_root,
+            reward_weight_raw=args.reward_weight_raw,
+            reward_weight_vs_benchmark=args.reward_weight_vs_benchmark,
+            reward_weight_vs_equal_weight=args.reward_weight_vs_equal_weight,
+            reward_weight_vs_restricted_random=args.reward_weight_vs_restricted_random,
+            reward_weight_vs_markowitz=args.reward_weight_vs_markowitz,
         ),
     )
     print(
@@ -349,6 +387,7 @@ def main() -> None:
                 "validation_mean_excess_vs_restricted_random": float(
                     validation["policy_mean_excess_vs_restricted_random"]
                 ),
+                "validation_mean_excess_vs_markowitz": float(validation["policy_mean_excess_vs_markowitz"]),
                 "validation_t_statistic": float(validation["t_statistic"]),
                 "all_significant": bool(all_split["significant_outperformance"]),
                 "all_mean_excess_return": float(all_split["policy_mean_excess_return"]),
@@ -356,6 +395,7 @@ def main() -> None:
                 "all_mean_excess_vs_restricted_random": float(
                     all_split["policy_mean_excess_vs_restricted_random"]
                 ),
+                "all_mean_excess_vs_markowitz": float(all_split["policy_mean_excess_vs_markowitz"]),
                 "all_t_statistic": float(all_split["t_statistic"]),
                 "all_mean_abs_weight_error": float(result.evaluation_summary.loc["all", "mean_abs_weight_error"]),
                 "candidate_dir": str(candidate_dir),

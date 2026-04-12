@@ -19,6 +19,7 @@ from quantshield.risk import RiskConfig as EstimationRiskConfig, estimate_risk
 from quantshield.rl import (
     OfflinePortfolioDataset,
     _compose_training_reward,
+    _mean_variance_baseline_reward,
     _restricted_random_weights,
     _stable_seed,
     _state_features,
@@ -55,6 +56,9 @@ class RandomSP500TrainingSpec:
     reward_weight_vs_benchmark: float = 0.40
     reward_weight_vs_equal_weight: float = 0.30
     reward_weight_vs_restricted_random: float = 0.20
+    reward_weight_vs_markowitz: float = 0.0
+    markowitz_risk_aversion: float = 3.0
+    markowitz_max_weight: float = 0.35
 
 
 @dataclass(slots=True)
@@ -150,6 +154,59 @@ def _cached_training_universe(
         if len(symbols) > len(best_symbols):
             best_symbols = symbols
     return sorted(best_symbols)
+
+
+def _load_largest_cached_price_panel(
+    loader: MarketDataLoader,
+    *,
+    start_date: str,
+    end_date: str | None,
+    benchmark_ticker: str | None,
+) -> pd.DataFrame | None:
+    """Return the broadest cached price panel that covers the requested sample window."""
+    requested_start = pd.Timestamp(start_date)
+    requested_end = pd.Timestamp(end_date) if end_date is not None else None
+    excluded = {ticker.upper() for ticker in (*CANONICAL_TOP_ETF_UNIVERSE, *SEARCH_SEED_TICKERS)}
+    best_prices: pd.DataFrame | None = None
+    best_rank: tuple[int, int] | None = None
+
+    for candidate_path in Path(loader.cache_dir).glob("*.csv"):
+        try:
+            cached_prices = loader.load_cached_prices(candidate_path)
+        except Exception:
+            continue
+        if cached_prices.empty:
+            continue
+        if cached_prices.index.min() > requested_start:
+            continue
+        if requested_end is not None and cached_prices.index.max() < requested_end:
+            continue
+
+        subset = cached_prices.loc[cached_prices.index >= requested_start]
+        if requested_end is not None:
+            subset = subset.loc[subset.index <= requested_end]
+        if subset.empty:
+            continue
+
+        available_symbols = [
+            str(column).strip().upper()
+            for column in subset.columns
+            if str(column).strip()
+            and str(column).strip().upper() not in excluded
+            and not str(column).strip().upper().startswith("ASSET_")
+            and not re.fullmatch(r"\d+", str(column).strip().upper())
+        ]
+        if benchmark_ticker is not None and benchmark_ticker not in subset.columns:
+            continue
+
+        rank = (len(available_symbols), len(subset))
+        if best_rank is not None and rank <= best_rank:
+            continue
+        ordered_columns = available_symbols + ([benchmark_ticker] if benchmark_ticker and benchmark_ticker not in available_symbols else [])
+        best_prices = subset.loc[:, [column for column in ordered_columns if column in subset.columns]].copy()
+        best_rank = rank
+
+    return best_prices
 
 
 def sample_random_universes(
@@ -315,11 +372,17 @@ def combine_offline_datasets(datasets: list[OfflinePortfolioDataset]) -> Offline
         benchmark_rewards=np.concatenate([dataset.benchmark_rewards for dataset in datasets], axis=0),
         equal_weight_rewards=np.concatenate([dataset.equal_weight_rewards for dataset in datasets], axis=0),
         restricted_random_rewards=np.concatenate([dataset.restricted_random_rewards for dataset in datasets], axis=0),
+        markowitz_rewards=np.concatenate([dataset.markowitz_rewards for dataset in datasets], axis=0),
         forward_segments=[segment for dataset in datasets for segment in dataset.forward_segments],
         metadata=metadata,
         tickers=[f"ASSET_{index + 1:02d}" for index in range(action_dim)],
         feature_names=feature_names,
         lookback_window=lookback_window,
+        reward_weight_raw=datasets[0].reward_weight_raw,
+        reward_weight_vs_benchmark=datasets[0].reward_weight_vs_benchmark,
+        reward_weight_vs_equal_weight=datasets[0].reward_weight_vs_equal_weight,
+        reward_weight_vs_restricted_random=datasets[0].reward_weight_vs_restricted_random,
+        reward_weight_vs_markowitz=datasets[0].reward_weight_vs_markowitz,
     )
 
 
@@ -367,12 +430,6 @@ def build_random_sp500_dataset(
 ) -> tuple[OfflinePortfolioDataset, dict[str, object]]:
     """Build a randomized offline dataset from S&P 500 universes with objective-weighted targets."""
     loader = loader or MarketDataLoader(cache_dir=base_config.data.cache_dir)
-    cached_constituents = _cached_training_universe(
-        base_config.data.cache_dir,
-        start_date=spec.start_date,
-        end_date=spec.end_date,
-    )
-    constituents = cached_constituents if len(cached_constituents) >= spec.candidate_pool_size else fetch_sp500_constituents()
     priors = load_objective_run_priors(spec.objective_suite_root, spec.objectives)
     benchmark_ticker = (
         base_config.backtest.benchmark_ticker
@@ -380,6 +437,26 @@ def build_random_sp500_dataset(
         else spec.benchmark_mode
     )
     use_equal_weight_benchmark = benchmark_ticker == "__equal_weight__"
+    cached_prices = _load_largest_cached_price_panel(
+        loader,
+        start_date=spec.start_date,
+        end_date=spec.end_date,
+        benchmark_ticker=None if use_equal_weight_benchmark else benchmark_ticker,
+    )
+    if cached_prices is not None:
+        cached_constituents = [
+            str(column).strip().upper()
+            for column in cached_prices.columns
+            if str(column).strip()
+            and str(column).strip().upper() != benchmark_ticker
+        ]
+    else:
+        cached_constituents = _cached_training_universe(
+            base_config.data.cache_dir,
+            start_date=spec.start_date,
+            end_date=spec.end_date,
+        )
+    constituents = cached_constituents if len(cached_constituents) >= spec.candidate_pool_size else fetch_sp500_constituents()
     candidate_pool, universes = sample_random_universes(
         constituents,
         candidate_pool_size=spec.candidate_pool_size,
@@ -392,14 +469,17 @@ def build_random_sp500_dataset(
     all_tickers = list(candidate_pool)
     if not use_equal_weight_benchmark and benchmark_ticker not in all_tickers:
         all_tickers.append(benchmark_ticker)
-    prices = fetch_price_panel(
-        tickers=all_tickers,
-        loader=loader,
-        start_date=spec.start_date,
-        end_date=spec.end_date,
-        batch_size=spec.batch_download_size,
-        force_refresh=spec.force_refresh,
-    )
+    if cached_prices is not None and set(all_tickers).issubset(cached_prices.columns):
+        prices = cached_prices.loc[:, all_tickers].copy()
+    else:
+        prices = fetch_price_panel(
+            tickers=all_tickers,
+            loader=loader,
+            start_date=spec.start_date,
+            end_date=spec.end_date,
+            batch_size=spec.batch_download_size,
+            force_refresh=spec.force_refresh,
+        )
     clean_prices = clean_price_data(
         prices,
         drop_all_nan_assets=base_config.preprocessing.drop_all_nan_assets,
@@ -423,6 +503,7 @@ def build_random_sp500_dataset(
     benchmark_rewards: list[float] = []
     equal_weight_rewards: list[float] = []
     restricted_random_rewards: list[float] = []
+    markowitz_rewards: list[float] = []
     forward_segments: list[np.ndarray] = []
     universe_rows: list[dict[str, object]] = []
     metadata_rows: list[dict[str, object]] = []
@@ -463,6 +544,13 @@ def build_random_sp500_dataset(
             max_weight=spec.restricted_random_max_weight,
         )
         restricted_random_reward = float(np.prod(1.0 + segment_array @ restricted_random_action) - 1.0)
+        markowitz_reward = _mean_variance_baseline_reward(
+            window,
+            forward_segment,
+            periods_per_year=periods_per_year,
+            risk_aversion=spec.markowitz_risk_aversion,
+            max_weight=spec.markowitz_max_weight,
+        )
         objective_actions: dict[str, np.ndarray] = {}
         objective_raw_rewards: dict[str, float] = {}
         objective_excess_rewards: dict[str, float] = {}
@@ -514,10 +602,12 @@ def build_random_sp500_dataset(
             benchmark_reward=benchmark_reward,
             equal_weight_reward=equal_weight_reward,
             restricted_random_reward=restricted_random_reward,
+            markowitz_reward=markowitz_reward,
             reward_weight_raw=spec.reward_weight_raw,
             reward_weight_vs_benchmark=spec.reward_weight_vs_benchmark,
             reward_weight_vs_equal_weight=spec.reward_weight_vs_equal_weight,
             reward_weight_vs_restricted_random=spec.reward_weight_vs_restricted_random,
+            reward_weight_vs_markowitz=spec.reward_weight_vs_markowitz,
         )
         selected_objective = max(mixture_weights, key=mixture_weights.get)
 
@@ -528,6 +618,7 @@ def build_random_sp500_dataset(
         benchmark_rewards.append(benchmark_reward)
         equal_weight_rewards.append(equal_weight_reward)
         restricted_random_rewards.append(restricted_random_reward)
+        markowitz_rewards.append(markowitz_reward)
         forward_segments.append(segment_array)
         metadata_row = {
             "objective": "objective_weighted_ensemble",
@@ -539,6 +630,7 @@ def build_random_sp500_dataset(
             "benchmark_reward": benchmark_reward,
             "equal_weight_reward": equal_weight_reward,
             "restricted_random_reward": restricted_random_reward,
+            "markowitz_reward": markowitz_reward,
             "excess_reward": blended_excess_reward,
             "weighted_reward": weighted_reward,
             "composite_reward": composite_reward,
@@ -577,11 +669,17 @@ def build_random_sp500_dataset(
         benchmark_rewards=np.asarray(benchmark_rewards, dtype=np.float32),
         equal_weight_rewards=np.asarray(equal_weight_rewards, dtype=np.float32),
         restricted_random_rewards=np.asarray(restricted_random_rewards, dtype=np.float32),
+        markowitz_rewards=np.asarray(markowitz_rewards, dtype=np.float32),
         forward_segments=forward_segments,
         metadata=pd.DataFrame(metadata_rows),
         tickers=tickers,
         feature_names=["return", "z_score", "cumulative_return"],
         lookback_window=spec.lookback_window,
+        reward_weight_raw=spec.reward_weight_raw,
+        reward_weight_vs_benchmark=spec.reward_weight_vs_benchmark,
+        reward_weight_vs_equal_weight=spec.reward_weight_vs_equal_weight,
+        reward_weight_vs_restricted_random=spec.reward_weight_vs_restricted_random,
+        reward_weight_vs_markowitz=spec.reward_weight_vs_markowitz,
     )
     summary = {
         "candidate_pool": candidate_pool,

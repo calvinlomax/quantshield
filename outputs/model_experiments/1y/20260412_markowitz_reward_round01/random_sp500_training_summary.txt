@@ -1,0 +1,48 @@
+QuantShield Random S&P 500 Training Summary
+==========================================
+Candidate pool size: 40
+Duration profile: 1y
+Random universes: 48
+Portfolio size: 10
+Lookback window: 63
+Rebalance frequency: W-FRI
+Objectives: min_variance, mean_variance, risk_parity, equal_weight
+Objective suite priors: outputs/ml_tuned_objective_runs
+Reward weights:
+  raw=0.05, benchmark=0.15, equal_weight=0.05, restricted_random=0.05, markowitz=0.70
+Sampled ticker count: 40
+Selected candidate: deeper_224x8x5
+Selected epoch: 35
+
+Benchmark comparison:
+           samples benchmark_mean_raw_return equal_weight_mean_raw_return restricted_random_mean_raw_return markowitz_mean_raw_return policy_mean_raw_return policy_mean_excess_return policy_mean_excess_vs_equal_weight policy_mean_excess_vs_restricted_random policy_mean_excess_vs_markowitz t_statistic p_value significant_outperformance equal_weight_t_statistic equal_weight_p_value equal_weight_significant_outperformance restricted_random_t_statistic restricted_random_p_value restricted_random_significant_outperformance markowitz_t_statistic markowitz_p_value markowitz_significant_outperformance
+Split                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+train           38                    0.0082                       0.0068                            0.0065                    0.0067                 0.0077                   -0.0005                             0.0009                                  0.0013                          0.0010     -0.2312  0.5908                      False                   1.9073               0.0321                                    True                        0.7373                    0.2328                                        False                0.2789            0.3909                                False
+validation      10                    0.0042                       0.0074                            0.0103                    0.0051                 0.0074                    0.0032                            -0.0000                                 -0.0029                          0.0024      0.7985  0.2226                      False                  -0.0484               0.5188                                   False                       -0.8054                    0.7793                                        False                0.3686            0.3605                                False
+all             48                    0.0074                       0.0069                            0.0073                    0.0064                 0.0077                    0.0003                             0.0007                                  0.0004                          0.0013      0.1272  0.4497                      False                   1.8572               0.0348                                    True                        0.2547                    0.4000                                        False                0.4145            0.3402                                False
+
+Composite model score:
+            benchmark_component  equal_weight_component  restricted_random_component  markowitz_component  raw_return_component  significance_component  significance_bonus  weight_error_penalty  composite_score
+Split                                                                                                                                                                                                             
+train                   -1.5657                  1.7835                       1.8812               2.4586                6.4762                  3.3100              2.5000                2.8010          14.0427
+validation               9.2458                 -0.0309                      -4.2278               5.8102                6.3079                  0.3915              0.0000                1.9077          15.5889
+all                      0.7501                  1.4069                       0.5915               3.1685                6.4416                  3.2641              2.5000                2.6149          15.5080
+
+Candidate sweep:
+       candidate  hidden_dim  attention_heads  attention_layers  epochs  dropout  learning_rate  actor_bc_weight  selected_epoch  validation_composite_score  all_composite_score  validation_significant  validation_mean_excess_return  validation_mean_excess_vs_equal_weight  validation_mean_excess_vs_restricted_random  validation_mean_excess_vs_markowitz  validation_t_statistic  all_significant  all_mean_excess_return  all_mean_excess_vs_equal_weight  all_mean_excess_vs_restricted_random  all_mean_excess_vs_markowitz  all_t_statistic  all_mean_abs_weight_error                                                                                    candidate_dir
+  deeper_224x8x5         224                8                 5      80 0.080000       0.000500         1.500000              35                   15.588885            15.507956                   False                       0.003185                               -0.000015                                    -0.002897                             0.002367                0.798455            False                0.000250                         0.000705                              0.000395                      0.001274         0.127223                   0.043582   outputs/model_experiments/1y/20260412_markowitz_reward_round01/candidate_models/deeper_224x8x5
+   wider_256x8x4         256                8                 4      64 0.080000       0.000600         1.750000               1                   16.967870             8.777039                   False                       0.003239                                0.000038                                    -0.002843                             0.002421                0.828272            False               -0.000364                         0.000091                             -0.000219                      0.000660        -0.191890                   0.048856    outputs/model_experiments/1y/20260412_markowitz_reward_round01/candidate_models/wider_256x8x4
+balanced_192x6x4         192                6                 4      32 0.050000       0.000800         2.500000               1                   15.476960             5.367329                   False                       0.003186                               -0.000015                                    -0.002896                             0.002368                0.801253            False               -0.000373                         0.000082                             -0.000228                      0.000652        -0.197616                   0.048674 outputs/model_experiments/1y/20260412_markowitz_reward_round01/candidate_models/balanced_192x6x4
+
+Sample universes:
+ universe_id                                       tickers rebalance_date forward_end  samples selected_objective  weighted_reward  composite_reward  blended_excess_reward
+           0       APO,AWK,CDW,CMS,DHI,ETR,FCX,FTNT,GS,HCA     2023-11-10  2023-11-17        1       equal_weight         0.016051          0.012995               0.016051
+           1     ACGL,APP,BF-B,ESS,ETR,GPN,HAS,HCA,INTC,LH     2025-08-29  2025-09-05        1       min_variance        -0.000556          0.000040              -0.000540
+           2     AME,APO,APP,BKR,COR,DHI,EXE,FITB,HSIC,IQV     2025-05-09  2025-05-16        1       equal_weight        -0.008688          0.009513              -0.008615
+           3      AME,BIIB,BR,CARR,CDNS,COR,ES,INTC,LH,LLY     2024-10-11  2024-10-18        1       min_variance         0.007723          0.007714               0.007716
+           4    APP,CHD,COR,CPRT,DHI,EQIX,ETR,FSLR,GPN,IQV     2024-10-04  2024-10-11        1       min_variance        -0.005724         -0.003214              -0.005714
+           5      AWK,COR,EQIX,ES,EXE,FITB,HCA,HON,INTC,LH     2025-11-21  2025-11-28        1      mean_variance         0.032485          0.006889               0.032485
+           6     APA,APP,CDNS,CDW,CMS,EQIX,HCA,IBM,IQV,LLY     2023-11-03  2023-11-10        1      mean_variance         0.043733         -0.000060               0.043733
+           7    APA,APO,AWK,BR,CMS,CPRT,EXE,FSLR,HSIC,INTC     2025-06-20  2025-06-27        1       equal_weight        -0.026425         -0.001602              -0.026414
+           8 ACGL,CDW,CMS,CPRT,DHI,FITB,FSLR,GOOG,INTC,LLY     2024-02-23  2024-03-01        1      mean_variance         0.010881         -0.001467               0.010882
+           9  AME,APP,AWK,BF-B,BIIB,CDNS,CPRT,FCX,FSLR,IQV     2023-11-10  2023-11-17        1       equal_weight         0.012393          0.038444               0.012410

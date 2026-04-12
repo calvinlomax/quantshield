@@ -75,6 +75,7 @@ def test_build_random_sp500_dataset_from_mock_panel(monkeypatch) -> None:
     assert set(["universe_id", "universe_tickers", "rebalance_date", "selected_objective", "weighted_reward"]).issubset(dataset.metadata.columns)
     assert len(dataset.equal_weight_rewards) == len(dataset.states)
     assert len(dataset.restricted_random_rewards) == len(dataset.states)
+    assert len(dataset.markowitz_rewards) == len(dataset.states)
     assert len(summary["candidate_pool"]) == 12
 
 

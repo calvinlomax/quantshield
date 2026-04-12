@@ -46,6 +46,7 @@ def test_build_offline_rl_dataset_shapes() -> None:
     assert len(dataset.metadata) == len(dataset.states)
     assert len(dataset.equal_weight_rewards) == len(dataset.states)
     assert len(dataset.restricted_random_rewards) == len(dataset.states)
+    assert len(dataset.markowitz_rewards) == len(dataset.states)
 
 
 def test_actor_outputs_simplex_weights() -> None:
@@ -100,7 +101,14 @@ def test_training_produces_benchmark_summary(tmp_path) -> None:
 
     result = train_transformer_actor_critic(dataset, config, device="cpu")
 
-    assert {"benchmark_mean_raw_return", "policy_mean_raw_return", "policy_mean_excess_return", "t_statistic", "p_value"}.issubset(
+    assert {
+        "benchmark_mean_raw_return",
+        "policy_mean_raw_return",
+        "policy_mean_excess_return",
+        "policy_mean_excess_vs_markowitz",
+        "t_statistic",
+        "p_value",
+    }.issubset(
         result.benchmark_summary.columns
     )
     assert list(result.benchmark_summary.index) == ["train", "validation", "all"]
