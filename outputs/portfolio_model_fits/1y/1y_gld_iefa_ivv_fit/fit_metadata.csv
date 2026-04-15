@@ -1,0 +1,2 @@
+Index,name,duration_key,tickers,benchmark_ticker,rebalance_frequency,lookback_window,candidate_mode,selected_candidate,selected_epoch,model_path
+0,1y_gld_iefa_ivv_fit,1y,"['GLD', 'IEFA', 'IVV', 'QQQ', 'SPY', 'VEA', 'VOO', 'VTI', 'VTV', 'VUG']",SPY,2W-FRI,63,experimental,portfolio_oracle_blend_224x8x4,59,/Users/calvinlomax/Desktop/QuantShield/outputs/portfolio_model_fits/1y/1y_gld_iefa_ivv_fit/actor_critic_policy.pt

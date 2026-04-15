@@ -1,0 +1,30 @@
+Portfolio Fit: 1y_gld_iefa_ivv_fit
+Tickers: GLD, IEFA, IVV, QQQ, SPY, VEA, VOO, VTI, VTV, VUG
+Training horizon: 1y
+Start date: 2025-04-29
+End date: 2026-04-15
+Benchmark: SPY
+Rebalance frequency: 2W-FRI
+Selected candidate: portfolio_oracle_blend_224x8x4
+Selected epoch: 59
+
+Composite model score:
+            benchmark_component  equal_weight_component  restricted_random_component  markowitz_component  raw_return_component  significance_component  significance_bonus  weight_error_penalty  composite_score
+Split                                                                                                                                                                                                             
+train                   29.9422                 19.9207                      14.9514              24.7396                9.9933                 14.9914             10.0000                3.9191         120.6196
+validation              24.9236                 17.4987                      13.4049              24.4508                9.4835                 14.0888             10.0000                7.3300         106.5203
+all                     29.8563                 19.8403                      14.9015              24.6976                9.9839                 14.9937             10.0000                4.6013         119.6719
+
+Baseline ticker qualification:
+     split  beats_all_tickers  significant_vs_all_tickers  min_mean_excess_return  mean_mean_excess_return
+     train               True                        True                0.010518                 0.031135
+validation               True                       False                0.006366                 0.013538
+       all               True                        True                0.014569                 0.027615
+
+Candidate sweep:
+                     candidate  selected_epoch  hidden_dim  attention_heads  attention_layers  epochs                                                                                                                              objectives  training_samples  evaluation_samples  all_composite_score  validation_beats_all_tickers  validation_significant_vs_all_tickers  validation_min_mean_excess_return  all_beats_all_tickers  all_significant_vs_all_tickers  all_min_mean_excess_return                                                                                                                              candidate_dir
+portfolio_oracle_blend_224x8x4              59         224                8                 4      96                                                            best_asset,best_asset_anchor,top2_blend,oracle_softmax,forward_mean_variance                90                  90           119.671917                          True                                  False                           0.006366                   True                            True                    0.014569 /Users/calvinlomax/Desktop/QuantShield/outputs/portfolio_model_fits/1y/1y_gld_iefa_ivv_fit/candidate_models/portfolio_oracle_blend_224x8x4
+        portfolio_deep_224x8x5              78         224                8                 5      80 best_asset,best_asset_anchor,best_asset_mirror,top2_blend,oracle_softmax,forward_mean_variance,forward_risk_parity,forward_min_variance               144                 144           116.973265                          True                                  False                           0.004926                   True                            True                    0.010373         /Users/calvinlomax/Desktop/QuantShield/outputs/portfolio_model_fits/1y/1y_gld_iefa_ivv_fit/candidate_models/portfolio_deep_224x8x5
+ portfolio_regularized_256x8x5              45         256                8                 5      88                   best_asset,best_asset_anchor,top2_blend,oracle_softmax,forward_mean_variance,forward_risk_parity,forward_min_variance               126                 126           115.268073                          True                                  False                           0.004857                   True                            True                    0.007739  /Users/calvinlomax/Desktop/QuantShield/outputs/portfolio_model_fits/1y/1y_gld_iefa_ivv_fit/candidate_models/portfolio_regularized_256x8x5
+        portfolio_wide_256x8x4              44         256                8                 4      68                   best_asset,best_asset_anchor,top2_blend,oracle_softmax,forward_mean_variance,forward_risk_parity,forward_min_variance               126                 126           116.307844                          True                                  False                           0.004081                   True                            True                    0.009927         /Users/calvinlomax/Desktop/QuantShield/outputs/portfolio_model_fits/1y/1y_gld_iefa_ivv_fit/candidate_models/portfolio_wide_256x8x4
+    portfolio_balanced_192x6x4              55         192                6                 4      56                                     best_asset,top2_blend,oracle_softmax,forward_mean_variance,forward_risk_parity,forward_min_variance               108                 108           111.272076                          True                                  False                           0.003617                   True                            True                    0.003851     /Users/calvinlomax/Desktop/QuantShield/outputs/portfolio_model_fits/1y/1y_gld_iefa_ivv_fit/candidate_models/portfolio_balanced_192x6x4

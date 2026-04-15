@@ -395,7 +395,6 @@ class FitModelDialog(QDialog):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        form = QFormLayout()
         self.name_input = QLineEdit(default_name, self)
         self.name_input.textChanged.connect(self._update_output_path_label)
         self.duration_combo = QComboBox(self)
@@ -452,18 +451,34 @@ class FitModelDialog(QDialog):
         self.device_combo.addItem("Auto", "")
         self.device_combo.addItem("CPU", "cpu")
 
-        form.addRow("Fit Name", self.name_input)
-        form.addRow("Training Horizon", self.duration_combo)
-        form.addRow("Training Start", self.start_date_edit)
-        form.addRow("Training End", self.end_date_edit)
-        form.addRow("Benchmark", self.benchmark_combo)
-        form.addRow("Rebalance Interval", self.rebalance_combo)
-        form.addRow("Candidate Set", self.candidate_mode_combo)
-        form.addRow("Lookback Window", self.lookback_spin)
-        form.addRow("Epoch Budget", self.epochs_spin)
-        form.addRow("Batch Size", self.batch_size_spin)
-        form.addRow("Device", self.device_combo)
-        layout.addLayout(form)
+        controls_row = QHBoxLayout()
+        controls_row.setSpacing(24)
+
+        left_form = QFormLayout()
+        left_form.addRow("Fit Name", self.name_input)
+        left_form.addRow("Training Horizon", self.duration_combo)
+        left_form.addRow("Benchmark", self.benchmark_combo)
+        left_form.addRow("Device", self.device_combo)
+
+        middle_form = QFormLayout()
+        middle_form.addRow("Training Start", self.start_date_edit)
+        middle_form.addRow("Training End", self.end_date_edit)
+        middle_form.addRow("Rebalance Interval", self.rebalance_combo)
+
+        right_form = QFormLayout()
+        right_form.addRow("Candidate Set", self.candidate_mode_combo)
+        right_form.addRow("Lookback Window", self.lookback_spin)
+        right_form.addRow("Epoch Budget", self.epochs_spin)
+        right_form.addRow("Batch Size", self.batch_size_spin)
+
+        for form in (left_form, middle_form, right_form):
+            form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+
+        controls_row.addLayout(left_form, stretch=1)
+        controls_row.addLayout(middle_form, stretch=1)
+        controls_row.addLayout(right_form, stretch=1)
+        layout.addLayout(controls_row)
 
         self.output_path_label = QLabel(self)
         self.output_path_label.setWordWrap(True)
