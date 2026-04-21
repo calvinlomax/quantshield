@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 import os
 from pathlib import Path
 import sys
@@ -13,7 +14,16 @@ from quantshield.data_loader import MarketDataLoader
 from quantshield.metrics import sharpe_ratio
 from quantshield.replay_durations import checkpoint_root_for_duration, duration_end_from_start, duration_start_from_end
 from quantshield.utils import generate_schedule
-from quantshield_app.services import CheckpointService, MarketDataService, PortfolioLibraryService, TickerInfoService, TickerSearchService, parse_ticker_input
+from quantshield_app.services import (
+    CheckpointService,
+    MarketDataService,
+    ModelTrainingRequest,
+    ModelTrainingService,
+    PortfolioLibraryService,
+    TickerInfoService,
+    TickerSearchService,
+    parse_ticker_input,
+)
 from quantshield_app.services.checkpoint_service import DEFAULT_CHECKPOINT_ROOTS, is_placeholder_ticker
 from quantshield_app.services.replay_service import PolicyReplayResult, ReplayFrame, ReplayService
 from quantshield_app.services.treasury_rate_service import TreasuryRateAssumption, TreasuryRateService
@@ -492,6 +502,48 @@ def test_checkpoint_service_reads_portfolio_fit_metadata(tmp_path) -> None:
     assert descriptor.selected_epoch == 17
 
 
+def test_checkpoint_service_skips_truncated_checkpoint_during_discovery(tmp_path) -> None:
+    valid_dir = tmp_path / "outputs" / "replay_checkpoint_suites" / "1y" / "valid"
+    valid_dir.mkdir(parents=True)
+    tickers = ["SPY", "QQQ", "GLD", "IVV", "VOO"]
+    config = RLTrainingConfig(
+        lookback_window=63,
+        hidden_dim=224,
+        attention_heads=8,
+        attention_layers=4,
+    )
+    model = CrossAssetAttentionActorCritic(
+        num_assets=len(tickers),
+        lookback_window=config.lookback_window,
+        feature_dim=3,
+        hidden_dim=config.hidden_dim,
+        attention_heads=config.attention_heads,
+        attention_layers=config.attention_layers,
+        dropout=config.dropout,
+    )
+    torch.save(
+        {
+            "tickers": tickers,
+            "training_config": asdict(config),
+            "state_dict": model.state_dict(),
+            "duration_key": "1y",
+        },
+        valid_dir / "actor_critic_policy.pt",
+    )
+
+    broken_dir = tmp_path / "outputs" / "replay_checkpoint_suites" / "1y" / "broken"
+    broken_dir.mkdir(parents=True)
+    (broken_dir / "actor_critic_policy.pt").write_bytes(b"not-a-valid-torch-pickle")
+
+    service = CheckpointService(search_roots=[tmp_path / "outputs"])
+    descriptors = service.discover_checkpoints(duration_key="1y")
+
+    assert len(descriptors) == 1
+    assert descriptors[0].path.parent.name == "valid"
+    assert len(service.last_discovery_warnings) == 1
+    assert "broken/actor_critic_policy.pt" in service.last_discovery_warnings[0]
+
+
 def test_checkpoint_descriptor_uses_50_name_default_for_large_placeholder_model(tmp_path) -> None:
     checkpoint_dir = tmp_path / "outputs" / "model_experiments_50_suite" / "portfolio_size_50" / "1y" / "oracle_memory"
     checkpoint_dir.mkdir(parents=True)
@@ -950,6 +1002,314 @@ def test_checkpoint_selection_dialog_tracks_visible_tab_selection() -> None:
     dialog.tab_widget.setCurrentIndex(3)
     app.processEvents()
     assert dialog.selected_descriptor == one_year
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_checkpoint_selection_dialog_opens_new_model_popup(monkeypatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.services.checkpoint_service import CheckpointDescriptor
+    from quantshield_app.ui.checkpoint_dialog import CheckpointSelectionDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    captured: dict[str, object] = {}
+
+    class FakeNewModelDialog:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def exec(self) -> int:
+            captured["executed"] = True
+            return 0
+
+    monkeypatch.setattr("quantshield_app.ui.checkpoint_dialog.NewModelDialog", FakeNewModelDialog)
+
+    descriptor = CheckpointDescriptor(
+        path=Path("outputs/replay_checkpoint_suites/1y/actor_critic_policy.pt"),
+        tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        lookback_window=63,
+        hidden_dim=224,
+        attention_heads=8,
+        attention_layers=4,
+        duration_key="1y",
+        candidate_name="balanced_192x6x4",
+    )
+    dialog = CheckpointSelectionDialog(
+        descriptors=[descriptor],
+        active_duration_key="1y",
+        current_portfolio_tickers=["AAPL", "MSFT", "NVDA", "AMZN", "META"],
+        current_benchmark_ticker="SPY",
+        current_start_date="2024-01-02",
+        current_end_date="2024-12-31",
+    )
+
+    dialog.new_model_button.click()
+
+    assert captured["current_portfolio_tickers"] == ["AAPL", "MSFT", "NVDA", "AMZN", "META"]
+    assert captured["current_benchmark_ticker"] == "SPY"
+    assert captured["current_duration_key"] == "1y"
+    assert captured["current_max_portfolio_size"] == 10
+    assert captured["executed"] is True
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_checkpoint_selection_dialog_refreshes_and_selects_new_model() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.services.checkpoint_service import CheckpointDescriptor
+    from quantshield_app.ui.checkpoint_dialog import CheckpointSelectionDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    base_descriptor = CheckpointDescriptor(
+        path=Path("outputs/replay_checkpoint_suites/1y/base.pt"),
+        tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        lookback_window=63,
+        hidden_dim=224,
+        attention_heads=8,
+        attention_layers=4,
+        duration_key="1y",
+        candidate_name="balanced_192x6x4",
+    )
+    new_descriptor = CheckpointDescriptor(
+        path=Path("outputs/model_experiments_50_suite/portfolio_size_50/1y/new.pt"),
+        tickers=[f"ASSET_{index + 1}" for index in range(50)],
+        lookback_window=63,
+        hidden_dim=320,
+        attention_heads=10,
+        attention_layers=6,
+        duration_key="1y",
+        candidate_name="portfolio_experimental_320x10x6",
+        user_name="User Run",
+    )
+
+    dialog = CheckpointSelectionDialog(
+        descriptors=[base_descriptor],
+        active_duration_key="1y",
+        refresh_descriptors_callback=lambda _path: ([base_descriptor, new_descriptor], new_descriptor),
+    )
+
+    dialog._refresh_models(new_descriptor.path)
+
+    assert dialog.selected_descriptor == new_descriptor
+    assert dialog.selected_max_portfolio_size == 50
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_model_training_service_validates_and_builds_script_command() -> None:
+    root = Path(__file__).resolve().parents[1]
+    service = ModelTrainingService(root)
+
+    invalid_request = ModelTrainingRequest(
+        name="",
+        tickers=["SPY", "QQQ", "GLD"],
+    )
+    errors = service.validate_request(invalid_request)
+
+    assert any("Model name is required" in error for error in errors)
+    assert any("Select at least 5 tickers" in error for error in errors)
+
+    request = ModelTrainingRequest(
+        name="pytest_new_model_training",
+        description="pytest dialog request",
+        tags=["pytest", "desktop"],
+        model_size=10,
+        training_mode="portfolio_fit",
+        tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        start_date="2024-01-02",
+        end_date="2024-12-31",
+        duration_key="1y",
+        benchmark_mode="markowitz",
+        output_category="portfolio_model_fits",
+    )
+    launch = service.resolve_request(request)
+
+    assert launch.script_path.name == "fit_portfolio_model.py"
+    assert launch.benchmark_value == "__markowitz__"
+    assert "--tickers" in launch.arguments
+    assert "--benchmark-mode" in launch.arguments
+    assert launch.resolved_hyperparameters["candidate_mode"] == "experimental"
+    assert "fit_portfolio_model.py" in launch.command_text
+
+
+def test_model_training_service_saves_completed_model(tmp_path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    service = ModelTrainingService(root)
+    source_dir = tmp_path / "session"
+    source_dir.mkdir(parents=True)
+    (source_dir / "actor_critic_policy.pt").write_text("checkpoint", encoding="utf-8")
+    (source_dir / "model_metadata.json").write_text(
+        json.dumps({"name": "temp_run", "output_dir": source_dir.as_posix()}),
+        encoding="utf-8",
+    )
+    target_dir = tmp_path / "saved_model"
+    service._build_output_dir = lambda request: target_dir  # type: ignore[method-assign]
+
+    model_path = service.save_trained_model(
+        training_output_dir=source_dir,
+        training_mode="portfolio_fit",
+        model_size=10,
+        duration_key="1y",
+        name="pytest_saved_model",
+        description="saved from test",
+        tags=["pytest"],
+        output_category="portfolio_model_fits",
+    )
+
+    assert model_path.exists()
+    metadata = json.loads((model_path.parent / "model_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["name"] == "pytest_saved_model"
+    assert metadata["description"] == "saved from test"
+    assert metadata["tags"] == ["pytest"]
+    assert source_dir.exists() is False
+
+
+def test_new_model_dialog_stages_preview_and_save_flow(monkeypatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.ui.new_model_dialog import NewModelDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    refreshed: list[Path | None] = []
+    dialog = NewModelDialog(
+        current_portfolio_tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        current_benchmark_ticker="SPY",
+        current_duration_key="1y",
+        current_start_date="2024-01-02",
+        current_end_date="2024-12-31",
+        current_max_portfolio_size=10,
+        refresh_models_callback=refreshed.append,
+    )
+    dialog.show()
+    app.processEvents()
+
+    summary, output_path, resolved_values, command = dialog._preview_payload()
+    assert "fit_portfolio_model.py" in command
+    assert "lookback_window" in resolved_values
+    assert "Universe:" in summary
+    assert "Output Path:" in output_path
+    assert dialog.post_run_group.isVisible() is False
+    assert dialog.metadata_tabs.isVisible() is False
+
+    dialog.training_mode_combo.setCurrentIndex(1)
+    app.processEvents()
+    assert dialog.random_universes_spin.isVisible()
+    assert "train_random_sp500_policy.py" in dialog._preview_payload()[3]
+
+    dialog.training_mode_combo.setCurrentIndex(2)
+    app.processEvents()
+    assert dialog.objectives_input.isVisible()
+    assert "train_rl_policy.py" in dialog._preview_payload()[3]
+
+    dialog._handle_event(
+        {
+            "event": "epoch_metrics",
+            "candidate": "alpha",
+            "metrics": {
+                "epoch": 1,
+                "train_total_loss": 0.9,
+                "validation_policy_excess_return": 0.02,
+                "validation_policy_excess_vs_markowitz": 0.01,
+            },
+        }
+    )
+    assert dialog._metric_rows["alpha"][0]["epoch"] == 1
+
+    dialog._handle_event(
+        {
+            "event": "candidate_completed",
+            "candidate": "alpha",
+            "hidden_dim": 224,
+            "attention_layers": 4,
+            "all_composite_score": 1.25,
+            "validation_composite_score": 1.10,
+        }
+    )
+    assert len(dialog._candidate_rows) == 1
+
+    output_model_path = Path("/tmp/pytest-trained-model.pt")
+    dialog._handle_event({"event": "run_complete", "model_path": output_model_path.as_posix()})
+    dialog._current_request = dialog._build_request()
+    dialog._last_output_dir = Path("/tmp/pytest-session-output")
+    dialog._run_complete = True
+    dialog._set_post_run_state()
+    assert dialog.post_run_group.isVisible() is True
+    dialog._show_metadata_tab()
+    assert dialog.metadata_tabs.isVisible() is True
+
+    saved_model_path = Path("/tmp/pytest-saved-model.pt")
+    monkeypatch.setattr(
+        dialog._training_service,
+        "save_trained_model",
+        lambda **kwargs: saved_model_path,
+    )
+    monkeypatch.setattr("quantshield_app.ui.new_model_dialog.QMessageBox.information", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dialog, "accept", lambda: None)
+    dialog.save_name_input.setText("pytest_saved_model")
+    dialog.save_description_input.setText("saved from dialog")
+    dialog.save_tags_input.setText("pytest, dialog")
+    dialog._save_model()
+    assert refreshed == [saved_model_path]
+
+    class FakeService:
+        is_running = True
+
+    dialog._training_service = FakeService()  # type: ignore[assignment]
+    messages: list[str] = []
+    monkeypatch.setattr("quantshield_app.ui.new_model_dialog.QMessageBox.information", lambda *args, **kwargs: messages.append("info"))
+    dialog.reject()
+    assert messages == ["info"]
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_training_monitor_dialog_locks_loss_axis_and_shows_candidate_progress() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.ui.new_model_dialog import TrainingMonitorDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    dialog = TrainingMonitorDialog()
+    dialog.set_candidate_plan(
+        total_candidates=3,
+        active_candidate="portfolio_regularized_256x8x5",
+        completed_candidates=1,
+    )
+
+    status_text = dialog.candidate_status_label.text()
+    assert "3 separate candidate models" in status_text
+    assert "1/3" in status_text
+    assert "portfolio_regularized_256x8x5" in status_text
+
+    first_history = pd.DataFrame(
+        {
+            "epoch": [1],
+            "train_total_loss": [0.85],
+            "train_actor_loss": [0.55],
+            "train_critic_loss": [0.25],
+            "train_bc_loss": [0.05],
+        }
+    )
+    second_history = pd.DataFrame(
+        {
+            "epoch": [1, 2],
+            "train_total_loss": [0.85, 0.30],
+            "train_actor_loss": [0.55, 0.10],
+            "train_critic_loss": [0.25, 0.15],
+            "train_bc_loss": [0.05, 0.05],
+        }
+    )
+
+    dialog.update_history(first_history)
+    first_ylim = dialog.loss_canvas.axes.get_ylim()
+    dialog.update_history(second_history)
+    second_ylim = dialog.loss_canvas.axes.get_ylim()
+
+    assert second_ylim == pytest.approx(first_ylim)
+
     dialog.deleteLater()
     app.processEvents()
 

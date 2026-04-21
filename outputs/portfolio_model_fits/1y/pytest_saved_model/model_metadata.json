@@ -1,0 +1,9 @@
+{
+  "description": "saved from test",
+  "model_path": "/Users/calvinlomax/Desktop/QuantShield/outputs/portfolio_model_fits/1y/pytest_saved_model/actor_critic_policy.pt",
+  "name": "pytest_saved_model",
+  "output_dir": "/Users/calvinlomax/Desktop/QuantShield/outputs/portfolio_model_fits/1y/pytest_saved_model",
+  "tags": [
+    "pytest"
+  ]
+}

@@ -973,6 +973,12 @@ class QuantShieldMainWindow(QMainWindow):
             selected_descriptor=self._current_descriptor,
             active_duration_key=self._active_duration_key(),
             active_max_portfolio_size=self._max_portfolio_size,
+            current_portfolio_tickers=self._selected_tickers(),
+            current_benchmark_ticker=self.benchmark_combo.currentText().strip().upper(),
+            current_start_date=self.start_date_edit.date().toString("yyyy-MM-dd"),
+            current_end_date=self.end_date_edit.date().toString("yyyy-MM-dd"),
+            portfolio_library_service=self.portfolio_library_service,
+            refresh_descriptors_callback=self._refresh_checkpoint_descriptors,
             parent=self,
         )
         if not dialog.exec() or dialog.selected_descriptor is None:
@@ -994,6 +1000,11 @@ class QuantShieldMainWindow(QMainWindow):
             self.duration_combo.setCurrentText(descriptor.duration_key)
             return
         self._apply_descriptor(descriptor, preserve_portfolio=True)
+
+    def _refresh_checkpoint_descriptors(self, preferred_model_path: Path | None = None) -> tuple[list[CheckpointDescriptor], CheckpointDescriptor | None]:
+        self._load_checkpoints()
+        matched = self._match_descriptor(preferred_model_path) if preferred_model_path is not None else None
+        return list(self._all_checkpoint_descriptors), matched
 
     def _set_playback_enabled(self, enabled: bool) -> None:
         for widget in [

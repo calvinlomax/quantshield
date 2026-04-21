@@ -200,6 +200,9 @@ class RLTrainingConfig:
     validation_fraction: float = 0.20
     gradient_clip_norm: float = 1.0
     seed: int = 42
+    optimizer_name: str = "adamw"
+    checkpoint_frequency: int = 0
+    early_stopping_patience: int = 0
 
 
 @dataclass(slots=True)
@@ -349,8 +352,17 @@ def build_offline_rl_dataset(
             raw_reward = _segment_cumulative_return(segment.to_numpy(dtype=np.float32), action)
             equal_weight_reward = float(np.prod(1.0 + segment.to_numpy(dtype=np.float32).mean(axis=1)) - 1.0)
 
+            benchmark_reward = equal_weight_reward
             if benchmark_ticker == "__equal_weight__":
                 benchmark_reward = equal_weight_reward
+            elif benchmark_ticker == "__markowitz__":
+                benchmark_reward = _mean_variance_baseline_reward(
+                    window,
+                    segment,
+                    periods_per_year=252,
+                    risk_aversion=markowitz_risk_aversion,
+                    max_weight=markowitz_max_weight,
+                )
             else:
                 if benchmark_ticker not in returns.columns:
                     raise ValueError(f"Benchmark ticker '{benchmark_ticker}' is not available in the return panel.")
@@ -363,12 +375,16 @@ def build_offline_rl_dataset(
                 max_weight=restricted_random_max_weight,
             )
             restricted_random_reward = _segment_cumulative_return(segment.to_numpy(dtype=np.float32), restricted_random_action)
-            markowitz_reward = _mean_variance_baseline_reward(
-                window,
-                segment,
-                periods_per_year=252,
-                risk_aversion=markowitz_risk_aversion,
-                max_weight=markowitz_max_weight,
+            markowitz_reward = (
+                float(benchmark_reward)
+                if benchmark_ticker == "__markowitz__"
+                else _mean_variance_baseline_reward(
+                    window,
+                    segment,
+                    periods_per_year=252,
+                    risk_aversion=markowitz_risk_aversion,
+                    max_weight=markowitz_max_weight,
+                )
             )
             excess_reward = raw_reward - benchmark_reward
             composite_reward = _compose_training_reward(
@@ -876,6 +892,7 @@ def train_transformer_actor_critic(
     *,
     device: str | torch.device | None = None,
     progress_callback: Callable[[int, pd.DataFrame], None] | None = None,
+    snapshot_callback: Callable[[int, nn.Module, pd.DataFrame], None] | None = None,
 ) -> RLTrainingResult:
     """Train a transformer actor-critic policy from offline demonstrations."""
     torch.manual_seed(config.seed)
@@ -913,16 +930,25 @@ def train_transformer_actor_critic(
         dropout=config.dropout,
     ).to(target_device)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay,
-    )
+    optimizer_name = str(config.optimizer_name or "adamw").strip().casefold()
+    if optimizer_name == "adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+        )
 
     history_rows: list[dict[str, float]] = []
     best_epoch = 0
     best_validation_key: tuple[float, float, float, float] | None = None
     best_state_dict: dict[str, torch.Tensor] | None = None
+    epochs_without_improvement = 0
 
     for epoch in range(1, config.epochs + 1):
         model.train()
@@ -995,6 +1021,9 @@ def train_transformer_actor_critic(
             best_validation_key = validation_key
             best_epoch = epoch
             best_state_dict = deepcopy(model.state_dict())
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
 
         history_rows.append(
             {
@@ -1007,6 +1036,11 @@ def train_transformer_actor_critic(
                 "train_demo_training_reward": float(train_dataset.rewards.mean()),
                 "train_demo_excess_return": float((train_dataset.raw_rewards - train_dataset.benchmark_rewards).mean()),
                 "train_policy_excess_return": float(train_policy_excess.mean()),
+                "train_policy_excess_vs_equal_weight": float((train_policy_raw - train_dataset.equal_weight_rewards).mean()),
+                "train_policy_excess_vs_restricted_random": float(
+                    (train_policy_raw - train_dataset.restricted_random_rewards).mean()
+                ),
+                "train_policy_excess_vs_markowitz": float((train_policy_raw - train_dataset.markowitz_rewards).mean()),
                 "train_policy_training_reward": float(
                     _compose_reward_vector(
                         train_policy_raw,
@@ -1026,6 +1060,10 @@ def train_transformer_actor_critic(
                     (validation_dataset.raw_rewards - validation_dataset.benchmark_rewards).mean()
                 ),
                 "validation_policy_excess_return": float(validation_policy_excess.mean()),
+                "validation_policy_excess_vs_equal_weight": float(validation_policy_excess_vs_equal_weight.mean()),
+                "validation_policy_excess_vs_restricted_random": float(
+                    validation_policy_excess_vs_restricted_random.mean()
+                ),
                 "validation_policy_training_reward": float(
                     _compose_reward_vector(
                         validation_policy_raw,
@@ -1043,10 +1081,20 @@ def train_transformer_actor_critic(
                 "validation_policy_excess_vs_markowitz": float(validation_policy_excess_vs_markowitz.mean()),
                 "validation_t_statistic": float(validation_t_statistic),
                 "validation_p_value": float(validation_p_value),
+                "best_epoch_so_far": float(best_epoch),
             }
         )
+        history_frame = pd.DataFrame(history_rows).set_index("epoch")
         if progress_callback is not None:
-            progress_callback(epoch, pd.DataFrame(history_rows).set_index("epoch"))
+            progress_callback(epoch, history_frame)
+        if (
+            snapshot_callback is not None
+            and int(config.checkpoint_frequency) > 0
+            and epoch % int(config.checkpoint_frequency) == 0
+        ):
+            snapshot_callback(epoch, model, history_frame)
+        if int(config.early_stopping_patience) > 0 and epochs_without_improvement >= int(config.early_stopping_patience):
+            break
 
     if best_state_dict is not None:
         model.load_state_dict(best_state_dict)

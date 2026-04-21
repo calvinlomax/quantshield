@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 import sys
 
@@ -16,7 +16,6 @@ if str(ROOT / "src") not in sys.path:
 
 from quantshield.config import load_config
 from quantshield.data_loader import MarketDataLoader
-from quantshield.optimization import OptimizationConfig, optimize_portfolio
 from quantshield.preprocessing import clean_price_data, compute_returns
 from quantshield.replay_durations import REPLAY_DURATION_PROFILES, get_replay_duration_profile
 from quantshield.rl import (
@@ -29,8 +28,9 @@ from quantshield.rl import (
     save_actor_critic_artifacts,
     train_transformer_actor_critic,
 )
-from quantshield.universe import CANONICAL_TOP_ETF_ASSET_CLASS_MAP
-from quantshield.utils import generate_schedule, save_frame
+from quantshield.training_logging import emit_training_event, write_model_metadata
+from quantshield.training_targets import build_forward_weight_histories, infer_asset_class_map
+from quantshield.utils import save_frame
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +46,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fit a portfolio-specific QuantShield actor-critic model.")
     parser.add_argument("--config", default="config/default_config.yaml", help="Base QuantShield config.")
     parser.add_argument("--name", required=True, help="User-facing fit name.")
+    parser.add_argument("--description", default="", help="Optional free-form description persisted with the model.")
+    parser.add_argument("--tags", nargs="*", default=[], help="Optional tags persisted with the model.")
+    parser.add_argument("--model-size", type=int, choices=(10, 50), default=10, help="Target model family width.")
     parser.add_argument(
         "--duration-key",
         choices=[profile.key for profile in REPLAY_DURATION_PROFILES],
@@ -54,7 +57,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-date", default="2018-01-01", help="Historical training sample start date.")
     parser.add_argument("--end-date", help="Historical training sample end date.")
-    parser.add_argument("--benchmark", default="SPY", help="Primary benchmark ticker used in composite scoring.")
+    parser.add_argument(
+        "--benchmark",
+        default="SPY",
+        help="Benchmark reference ticker or sentinel (__equal_weight__ / __markowitz__).",
+    )
+    parser.add_argument(
+        "--benchmark-mode",
+        choices=["ticker", "equal_weight", "markowitz"],
+        default="ticker",
+        help="How the benchmark field should be interpreted.",
+    )
     parser.add_argument("--rebalance-frequency", default="ME", help="Forward holding-period frequency.")
     parser.add_argument(
         "--candidate-mode",
@@ -66,10 +79,80 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=56, help="Base epoch budget for the sweep.")
     parser.add_argument("--batch-size", type=int, default=64, help="Base mini-batch size for the sweep.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for candidate configs.")
+    parser.add_argument("--learning-rate", type=float, default=8e-4, help="Base learning rate override.")
+    parser.add_argument("--weight-decay", type=float, default=2e-5, help="Base weight decay override.")
+    parser.add_argument("--dropout", type=float, default=0.06, help="Base dropout override.")
+    parser.add_argument("--hidden-dim", type=int, default=224, help="Base hidden dimension override.")
+    parser.add_argument("--attention-heads", type=int, default=8, help="Base attention-head count override.")
+    parser.add_argument("--attention-layers", type=int, default=4, help="Base attention-layer count override.")
+    parser.add_argument("--actor-bc-weight", type=float, default=2.75, help="Base actor behavior-cloning weight.")
+    parser.add_argument("--entropy-weight", type=float, default=4e-4, help="Base entropy regularization weight.")
+    parser.add_argument("--validation-fraction", type=float, default=0.20, help="Validation split fraction.")
+    parser.add_argument(
+        "--optimizer",
+        choices=["adamw", "adam"],
+        default="adamw",
+        help="Optimizer used for actor-critic training.",
+    )
+    parser.add_argument("--checkpoint-frequency", type=int, default=0, help="Optional intermediate checkpoint cadence.")
+    parser.add_argument("--early-stopping-patience", type=int, default=0, help="Optional validation patience.")
+    parser.add_argument("--reward-weight-raw", type=float, default=0.10, help="Reward weight for raw portfolio return.")
+    parser.add_argument(
+        "--reward-weight-vs-benchmark",
+        type=float,
+        default=0.40,
+        help="Reward weight for excess return versus the resolved benchmark.",
+    )
+    parser.add_argument(
+        "--reward-weight-vs-equal-weight",
+        type=float,
+        default=0.30,
+        help="Reward weight for excess return versus equal weight.",
+    )
+    parser.add_argument(
+        "--reward-weight-vs-restricted-random",
+        type=float,
+        default=0.20,
+        help="Reward weight for excess return versus the restricted-random baseline.",
+    )
+    parser.add_argument(
+        "--reward-weight-vs-markowitz",
+        type=float,
+        default=0.0,
+        help="Reward weight for excess return versus the Markowitz baseline.",
+    )
     parser.add_argument("--output-dir", required=True, help="Directory where fit artifacts will be written.")
     parser.add_argument("--device", help="Optional torch device override.")
     parser.add_argument("--tickers", nargs="+", required=True, help="Chosen portfolio tickers.")
     return parser.parse_args()
+
+
+def default_cli_options() -> dict[str, object]:
+    """Expose script defaults for the desktop app."""
+    return {
+        "mode": "portfolio_fit",
+        "candidate_mode": "experimental",
+        "epochs": 56,
+        "batch_size": 64,
+        "seed": 42,
+        "learning_rate": 8e-4,
+        "weight_decay": 2e-5,
+        "dropout": 0.06,
+        "hidden_dim": 224,
+        "attention_heads": 8,
+        "attention_layers": 4,
+        "actor_bc_weight": 2.75,
+        "entropy_weight": 4e-4,
+        "validation_fraction": 0.20,
+        "optimizer": "adamw",
+        "checkpoint_frequency": 0,
+        "early_stopping_patience": 0,
+        "reward_weight_raw": 0.10,
+        "reward_weight_vs_benchmark": 0.40,
+        "reward_weight_vs_equal_weight": 0.30,
+        "reward_weight_vs_restricted_random": 0.20,
+        "reward_weight_vs_markowitz": 0.0,
+    }
 
 
 def _normalize_tickers(tickers: list[str]) -> list[str]:
@@ -83,23 +166,20 @@ def _normalize_tickers(tickers: list[str]) -> list[str]:
     return normalized
 
 
-def _infer_asset_class_map(tickers: list[str]) -> dict[str, str]:
-    commodity = {"GLD", "SLV", "DBC", "USO"}
-    bond = {"TLT", "IEF", "SHY", "LQD", "AGG", "BND"}
-    real_estate = {"VNQ", "IYR", "SCHH"}
-    asset_class_map: dict[str, str] = {}
-    for ticker in tickers:
-        if ticker in CANONICAL_TOP_ETF_ASSET_CLASS_MAP:
-            asset_class_map[ticker] = CANONICAL_TOP_ETF_ASSET_CLASS_MAP[ticker]
-        elif ticker in commodity:
-            asset_class_map[ticker] = "commodity"
-        elif ticker in bond:
-            asset_class_map[ticker] = "bond"
-        elif ticker in real_estate:
-            asset_class_map[ticker] = "real_estate"
-        else:
-            asset_class_map[ticker] = "equity"
-    return asset_class_map
+def _resolved_benchmark_value(args: argparse.Namespace) -> str:
+    if args.benchmark_mode == "equal_weight":
+        return "__equal_weight__"
+    if args.benchmark_mode == "markowitz":
+        return "__markowitz__"
+    return args.benchmark.strip().upper()
+
+
+def _resolved_benchmark_label(args: argparse.Namespace, tickers: list[str]) -> str:
+    if args.benchmark_mode == "equal_weight":
+        return f"Equal Weight ({', '.join(tickers)})"
+    if args.benchmark_mode == "markowitz":
+        return f"Markowitz Mean-Variance ({', '.join(tickers)})"
+    return args.benchmark.strip().upper()
 
 
 def _build_candidate_specs(
@@ -109,25 +189,53 @@ def _build_candidate_specs(
     epochs: int,
     batch_size: int,
     seed: int,
+    learning_rate: float,
+    weight_decay: float,
+    dropout: float,
+    hidden_dim: int,
+    attention_heads: int,
+    attention_layers: int,
+    actor_bc_weight: float,
+    entropy_weight: float,
+    validation_fraction: float,
+    optimizer_name: str,
+    checkpoint_frequency: int,
+    early_stopping_patience: int,
 ) -> list[CandidateSpecification]:
     base_epochs = max(int(epochs), 24)
     base_batch = max(int(batch_size), 16)
+    base_hidden = max(int(hidden_dim), 64)
+    base_heads = max(int(attention_heads), 2)
+    base_layers = max(int(attention_layers), 1)
+    base_learning_rate = float(learning_rate)
+    base_weight_decay = float(weight_decay)
+    base_dropout = float(dropout)
+    base_actor_bc_weight = float(actor_bc_weight)
+    base_entropy_weight = float(entropy_weight)
+    base_validation_fraction = float(validation_fraction)
+    base_optimizer_name = str(optimizer_name or "adamw")
+    base_checkpoint_frequency = max(int(checkpoint_frequency), 0)
+    base_early_stopping_patience = max(int(early_stopping_patience), 0)
     candidates = [
         CandidateSpecification(
             name="portfolio_oracle_single_160x4x3",
             training_config=RLTrainingConfig(
                 lookback_window=lookback_window,
-                hidden_dim=160,
-                attention_heads=4,
-                attention_layers=3,
-                dropout=0.03,
-                learning_rate=9e-4,
-                weight_decay=1e-5,
+                hidden_dim=max(160, base_hidden - 64),
+                attention_heads=max(4, base_heads - 2),
+                attention_layers=max(3, base_layers - 1),
+                dropout=max(0.02, base_dropout - 0.02),
+                learning_rate=base_learning_rate * 1.10,
+                weight_decay=max(base_weight_decay * 0.75, 1e-6),
                 batch_size=min(base_batch, 64),
                 epochs=base_epochs + 24,
-                actor_bc_weight=4.5,
-                entropy_weight=2e-4,
+                actor_bc_weight=max(base_actor_bc_weight + 1.5, 1.0),
+                entropy_weight=max(base_entropy_weight * 0.50, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=seed,
+                optimizer_name=base_optimizer_name,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
             objective_names=("best_asset", "best_asset_anchor", "best_asset_mirror"),
         ),
@@ -135,17 +243,21 @@ def _build_candidate_specs(
             name="portfolio_oracle_top2_192x6x4",
             training_config=RLTrainingConfig(
                 lookback_window=lookback_window,
-                hidden_dim=192,
-                attention_heads=6,
-                attention_layers=4,
-                dropout=0.04,
-                learning_rate=8e-4,
-                weight_decay=1e-5,
+                hidden_dim=max(192, base_hidden - 32),
+                attention_heads=max(6, base_heads - 1),
+                attention_layers=max(4, base_layers),
+                dropout=max(0.03, base_dropout - 0.01),
+                learning_rate=base_learning_rate * 1.00,
+                weight_decay=max(base_weight_decay * 0.85, 1e-6),
                 batch_size=min(base_batch, 64),
                 epochs=base_epochs + 32,
-                actor_bc_weight=4.0,
-                entropy_weight=2e-4,
+                actor_bc_weight=max(base_actor_bc_weight + 1.0, 1.0),
+                entropy_weight=max(base_entropy_weight * 0.60, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=seed + 1,
+                optimizer_name=base_optimizer_name,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
             objective_names=("best_asset", "best_asset_anchor", "top2_blend", "oracle_softmax"),
         ),
@@ -153,17 +265,21 @@ def _build_candidate_specs(
             name="portfolio_oracle_blend_224x8x4",
             training_config=RLTrainingConfig(
                 lookback_window=lookback_window,
-                hidden_dim=224,
-                attention_heads=8,
-                attention_layers=4,
-                dropout=0.05,
-                learning_rate=7e-4,
-                weight_decay=1.5e-5,
+                hidden_dim=max(224, base_hidden),
+                attention_heads=max(8, base_heads),
+                attention_layers=max(4, base_layers),
+                dropout=max(0.04, base_dropout),
+                learning_rate=base_learning_rate * 0.90,
+                weight_decay=max(base_weight_decay * 0.90, 1e-6),
                 batch_size=min(base_batch, 64),
                 epochs=base_epochs + 40,
-                actor_bc_weight=3.75,
-                entropy_weight=2e-4,
+                actor_bc_weight=max(base_actor_bc_weight + 0.75, 1.0),
+                entropy_weight=max(base_entropy_weight * 0.75, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=seed + 2,
+                optimizer_name=base_optimizer_name,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
             objective_names=(
                 "best_asset",
@@ -177,17 +293,21 @@ def _build_candidate_specs(
             name="portfolio_balanced_192x6x4",
             training_config=RLTrainingConfig(
                 lookback_window=lookback_window,
-                hidden_dim=192,
-                attention_heads=6,
-                attention_layers=4,
-                dropout=0.05,
-                learning_rate=8e-4,
-                weight_decay=2e-5,
+                hidden_dim=max(192, base_hidden - 16),
+                attention_heads=max(6, base_heads),
+                attention_layers=max(4, base_layers),
+                dropout=max(0.04, base_dropout),
+                learning_rate=base_learning_rate * 1.00,
+                weight_decay=max(base_weight_decay, 1e-6),
                 batch_size=min(base_batch, 64),
                 epochs=base_epochs,
-                actor_bc_weight=3.0,
-                entropy_weight=5e-4,
+                actor_bc_weight=max(base_actor_bc_weight, 0.5),
+                entropy_weight=max(base_entropy_weight, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=seed + 3,
+                optimizer_name=base_optimizer_name,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
             objective_names=(
                 "best_asset",
@@ -202,17 +322,21 @@ def _build_candidate_specs(
             name="portfolio_wide_256x8x4",
             training_config=RLTrainingConfig(
                 lookback_window=lookback_window,
-                hidden_dim=256,
-                attention_heads=8,
-                attention_layers=4,
-                dropout=0.06,
-                learning_rate=6e-4,
-                weight_decay=2e-5,
+                hidden_dim=max(256, base_hidden + 32),
+                attention_heads=max(8, base_heads),
+                attention_layers=max(4, base_layers),
+                dropout=max(0.05, base_dropout + 0.01),
+                learning_rate=base_learning_rate * 0.80,
+                weight_decay=max(base_weight_decay * 1.10, 1e-6),
                 batch_size=min(base_batch, 64),
                 epochs=base_epochs + 12,
-                actor_bc_weight=2.75,
-                entropy_weight=4e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.95, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.90, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=seed + 4,
+                optimizer_name=base_optimizer_name,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
             objective_names=(
                 "best_asset",
@@ -228,17 +352,21 @@ def _build_candidate_specs(
             name="portfolio_deep_224x8x5",
             training_config=RLTrainingConfig(
                 lookback_window=lookback_window,
-                hidden_dim=224,
-                attention_heads=8,
-                attention_layers=5,
-                dropout=0.08,
-                learning_rate=5e-4,
-                weight_decay=3e-5,
+                hidden_dim=max(224, base_hidden + 16),
+                attention_heads=max(8, base_heads),
+                attention_layers=max(5, base_layers + 1),
+                dropout=max(0.07, base_dropout + 0.02),
+                learning_rate=base_learning_rate * 0.70,
+                weight_decay=max(base_weight_decay * 1.30, 1e-6),
                 batch_size=min(base_batch, 64),
                 epochs=base_epochs + 24,
-                actor_bc_weight=2.5,
-                entropy_weight=3e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.90, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.80, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=seed + 5,
+                optimizer_name=base_optimizer_name,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
             objective_names=(
                 "best_asset",
@@ -255,17 +383,21 @@ def _build_candidate_specs(
             name="portfolio_regularized_256x8x5",
             training_config=RLTrainingConfig(
                 lookback_window=lookback_window,
-                hidden_dim=256,
-                attention_heads=8,
-                attention_layers=5,
-                dropout=0.10,
-                learning_rate=4e-4,
-                weight_decay=5e-5,
+                hidden_dim=max(256, base_hidden + 32),
+                attention_heads=max(8, base_heads),
+                attention_layers=max(5, base_layers + 1),
+                dropout=max(0.09, base_dropout + 0.03),
+                learning_rate=base_learning_rate * 0.60,
+                weight_decay=max(base_weight_decay * 1.80, 1e-6),
                 batch_size=min(base_batch, 56),
                 epochs=base_epochs + 32,
-                actor_bc_weight=2.25,
-                entropy_weight=2.5e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.82, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.65, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=seed + 6,
+                optimizer_name=base_optimizer_name,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
             objective_names=(
                 "best_asset",
@@ -281,17 +413,21 @@ def _build_candidate_specs(
             name="portfolio_experimental_320x10x6",
             training_config=RLTrainingConfig(
                 lookback_window=lookback_window,
-                hidden_dim=320,
-                attention_heads=10,
-                attention_layers=6,
-                dropout=0.10,
-                learning_rate=3.5e-4,
-                weight_decay=6e-5,
+                hidden_dim=max(320, base_hidden + 96),
+                attention_heads=max(10, base_heads + 2),
+                attention_layers=max(6, base_layers + 2),
+                dropout=max(0.09, base_dropout + 0.03),
+                learning_rate=base_learning_rate * 0.50,
+                weight_decay=max(base_weight_decay * 2.10, 1e-6),
                 batch_size=min(base_batch, 48),
                 epochs=base_epochs + 48,
-                actor_bc_weight=2.1,
-                entropy_weight=2.0e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.76, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.55, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=seed + 7,
+                optimizer_name=base_optimizer_name,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
             objective_names=(
                 "best_asset",
@@ -308,17 +444,21 @@ def _build_candidate_specs(
             name="portfolio_titan_448x14x7",
             training_config=RLTrainingConfig(
                 lookback_window=lookback_window,
-                hidden_dim=448,
-                attention_heads=14,
-                attention_layers=7,
-                dropout=0.12,
-                learning_rate=3e-4,
-                weight_decay=8e-5,
+                hidden_dim=max(448, base_hidden + 192),
+                attention_heads=max(14, base_heads + 4),
+                attention_layers=max(7, base_layers + 3),
+                dropout=max(0.11, base_dropout + 0.05),
+                learning_rate=base_learning_rate * 0.40,
+                weight_decay=max(base_weight_decay * 2.80, 1e-6),
                 batch_size=min(base_batch, 32),
                 epochs=base_epochs + 64,
-                actor_bc_weight=2.0,
-                entropy_weight=1.5e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.72, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.45, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=seed + 8,
+                optimizer_name=base_optimizer_name,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
             objective_names=(
                 "best_asset",
@@ -337,111 +477,6 @@ def _build_candidate_specs(
     if candidate_mode == "experimental":
         return candidates[2:7]
     return candidates
-
-
-def _build_forward_weight_histories(
-    returns: pd.DataFrame,
-    *,
-    tickers: list[str],
-    lookback_window: int,
-    rebalance_frequency: str,
-    asset_class_map: dict[str, str],
-) -> dict[str, pd.DataFrame]:
-    rebalance_dates = list(generate_schedule(returns.index, rebalance_frequency))
-    histories: dict[str, list[pd.Series]] = {
-        "best_asset": [],
-        "best_asset_anchor": [],
-        "best_asset_mirror": [],
-        "top2_blend": [],
-        "oracle_softmax": [],
-        "forward_mean_variance": [],
-        "forward_risk_parity": [],
-        "forward_min_variance": [],
-    }
-    index: list[pd.Timestamp] = []
-
-    for position, rebalance_date in enumerate(rebalance_dates):
-        window = returns.loc[:rebalance_date, tickers].iloc[-lookback_window:]
-        if len(window) < lookback_window:
-            continue
-        start_idx = returns.index.get_loc(rebalance_date) + 1
-        end_idx = returns.index.get_loc(rebalance_dates[position + 1]) if position < len(rebalance_dates) - 1 else len(returns.index) - 1
-        forward_segment = returns.iloc[start_idx : end_idx + 1][tickers]
-        if forward_segment.empty:
-            continue
-
-        cumulative_returns = (1.0 + forward_segment).prod() - 1.0
-        best_ticker = str(cumulative_returns.idxmax())
-        best_asset_weights = pd.Series(0.0, index=tickers)
-        best_asset_weights.loc[best_ticker] = 1.0
-
-        top2 = cumulative_returns.sort_values(ascending=False).head(2).clip(lower=0.0)
-        if float(top2.sum()) <= 0.0:
-            top2_blend_weights = pd.Series(1.0 / len(tickers), index=tickers)
-        else:
-            top2_blend_weights = pd.Series(0.0, index=tickers)
-            top2_blend_weights.loc[top2.index] = top2 / top2.sum()
-
-        logits = cumulative_returns.to_numpy(dtype=np.float64)
-        logits = logits - float(np.max(logits))
-        softmax = np.exp(6.0 * logits)
-        oracle_softmax_weights = pd.Series(softmax / np.clip(softmax.sum(), 1e-9, None), index=tickers)
-
-        annualized_mean = forward_segment.mean() * 252
-        annualized_covariance = forward_segment.cov() * 252
-
-        mean_variance = optimize_portfolio(
-            annualized_mean,
-            annualized_covariance,
-            OptimizationConfig(
-                objective="mean_variance",
-                risk_aversion=0.35,
-                long_only=True,
-                min_weight=0.0,
-                max_weight=1.0,
-                turnover_penalty=0.0,
-            ),
-            asset_class_map=asset_class_map,
-        ).weights
-        risk_parity = optimize_portfolio(
-            annualized_mean,
-            annualized_covariance,
-            OptimizationConfig(
-                objective="risk_parity",
-                long_only=True,
-                min_weight=0.0,
-                max_weight=1.0,
-                turnover_penalty=0.0,
-            ),
-            asset_class_map=asset_class_map,
-        ).weights
-        min_variance = optimize_portfolio(
-            annualized_mean,
-            annualized_covariance,
-            OptimizationConfig(
-                objective="min_variance",
-                long_only=True,
-                min_weight=0.0,
-                max_weight=1.0,
-                turnover_penalty=0.0,
-            ),
-            asset_class_map=asset_class_map,
-        ).weights
-
-        histories["best_asset"].append(best_asset_weights)
-        histories["best_asset_anchor"].append(best_asset_weights)
-        histories["best_asset_mirror"].append(best_asset_weights)
-        histories["top2_blend"].append(top2_blend_weights)
-        histories["oracle_softmax"].append(oracle_softmax_weights)
-        histories["forward_mean_variance"].append(mean_variance)
-        histories["forward_risk_parity"].append(risk_parity)
-        histories["forward_min_variance"].append(min_variance)
-        index.append(pd.Timestamp(rebalance_date))
-
-    return {
-        objective: pd.DataFrame(weights, index=index).reindex(columns=tickers).fillna(0.0)
-        for objective, weights in histories.items()
-    }
 
 
 def _evaluate_checkpoint_vs_baseline_tickers(
@@ -537,17 +572,21 @@ def main() -> None:
     tickers = _normalize_tickers(args.tickers)
     if len(tickers) < 5:
         raise SystemExit("Fit Model requires at least 5 tickers.")
+    if len(tickers) > int(args.model_size):
+        raise SystemExit(f"Fit Model received {len(tickers)} tickers, which exceeds model size {args.model_size}.")
 
     duration_profile = get_replay_duration_profile(args.duration_key)
     lookback_window = int(args.lookback_window or duration_profile.lookback_window)
-    asset_class_map = _infer_asset_class_map(tickers)
+    asset_class_map = infer_asset_class_map(tickers)
+    benchmark_value = _resolved_benchmark_value(args)
+    benchmark_label = _resolved_benchmark_label(args, tickers)
 
     app_config = load_config(args.config)
     app_config.data.tickers = list(tickers)
     app_config.data.asset_class_map = asset_class_map
     app_config.data.start_date = args.start_date
     app_config.data.end_date = args.end_date
-    app_config.backtest.benchmark_ticker = args.benchmark.strip().upper()
+    app_config.backtest.benchmark_ticker = benchmark_value
 
     loader = MarketDataLoader(cache_dir=app_config.data.cache_dir)
     prices = clean_price_data(
@@ -562,7 +601,7 @@ def main() -> None:
         forward_fill=app_config.preprocessing.forward_fill_prices,
     )
     returns = compute_returns(prices, return_type=app_config.preprocessing.return_type)
-    weight_histories = _build_forward_weight_histories(
+    weight_histories = build_forward_weight_histories(
         returns,
         tickers=tickers,
         lookback_window=lookback_window,
@@ -572,6 +611,47 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     candidate_root = output_dir / "candidate_models"
     candidate_root.mkdir(parents=True, exist_ok=True)
+    command_args = sys.argv[1:]
+    initial_metadata = {
+        "name": args.name,
+        "description": args.description,
+        "tags": list(args.tags),
+        "training_mode": "portfolio_fit",
+        "model_size": int(args.model_size),
+        "duration_key": args.duration_key,
+        "tickers": tickers,
+        "benchmark_mode": args.benchmark_mode,
+        "benchmark_value": benchmark_value,
+        "benchmark_label": benchmark_label,
+        "rebalance_frequency": args.rebalance_frequency,
+        "lookback_window": lookback_window,
+        "candidate_mode": args.candidate_mode,
+        "output_dir": output_dir,
+        "command": [sys.executable, "scripts/fit_portfolio_model.py", *command_args],
+        "hyperparameters": {
+            "epochs": int(args.epochs),
+            "batch_size": int(args.batch_size),
+            "seed": int(args.seed),
+            "learning_rate": float(args.learning_rate),
+            "weight_decay": float(args.weight_decay),
+            "dropout": float(args.dropout),
+            "hidden_dim": int(args.hidden_dim),
+            "attention_heads": int(args.attention_heads),
+            "attention_layers": int(args.attention_layers),
+            "actor_bc_weight": float(args.actor_bc_weight),
+            "entropy_weight": float(args.entropy_weight),
+            "validation_fraction": float(args.validation_fraction),
+            "optimizer": str(args.optimizer),
+            "checkpoint_frequency": int(args.checkpoint_frequency),
+            "early_stopping_patience": int(args.early_stopping_patience),
+            "reward_weight_raw": float(args.reward_weight_raw),
+            "reward_weight_vs_benchmark": float(args.reward_weight_vs_benchmark),
+            "reward_weight_vs_equal_weight": float(args.reward_weight_vs_equal_weight),
+            "reward_weight_vs_restricted_random": float(args.reward_weight_vs_restricted_random),
+            "reward_weight_vs_markowitz": float(args.reward_weight_vs_markowitz),
+        },
+    }
+    write_model_metadata(output_dir, initial_metadata)
 
     sweep_rows: list[dict[str, object]] = []
     best_name: str | None = None
@@ -586,14 +666,44 @@ def main() -> None:
         f"({args.duration_key}, lb={lookback_window}, freq={args.rebalance_frequency}).",
         flush=True,
     )
-
-    for candidate_spec in _build_candidate_specs(
+    print(f"Resolved benchmark: {benchmark_label}", flush=True)
+    candidate_specs = _build_candidate_specs(
         candidate_mode=args.candidate_mode,
         lookback_window=lookback_window,
         epochs=args.epochs,
         batch_size=args.batch_size,
         seed=args.seed,
-    ):
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        dropout=args.dropout,
+        hidden_dim=args.hidden_dim,
+        attention_heads=args.attention_heads,
+        attention_layers=args.attention_layers,
+        actor_bc_weight=args.actor_bc_weight,
+        entropy_weight=args.entropy_weight,
+        validation_fraction=args.validation_fraction,
+        optimizer_name=args.optimizer,
+        checkpoint_frequency=args.checkpoint_frequency,
+        early_stopping_patience=args.early_stopping_patience,
+    )
+    emit_training_event(
+        "run_initialized",
+        mode="portfolio_fit",
+        output_dir=output_dir,
+        name=args.name,
+        duration_key=args.duration_key,
+        tickers=tickers,
+        benchmark_mode=args.benchmark_mode,
+        benchmark_value=benchmark_value,
+        benchmark_label=benchmark_label,
+        model_size=int(args.model_size),
+        rebalance_frequency=args.rebalance_frequency,
+        lookback_window=lookback_window,
+        candidate_total=len(candidate_specs),
+        hyperparameters=initial_metadata["hyperparameters"],
+    )
+
+    for candidate_index, candidate_spec in enumerate(candidate_specs, start=1):
         candidate_histories = {
             objective_name: weight_histories[objective_name]
             for objective_name in candidate_spec.objective_names
@@ -602,7 +712,12 @@ def main() -> None:
             returns,
             candidate_histories,
             lookback_window=lookback_window,
-            benchmark_ticker=app_config.backtest.benchmark_ticker,
+            benchmark_ticker=benchmark_value,
+            reward_weight_raw=args.reward_weight_raw,
+            reward_weight_vs_benchmark=args.reward_weight_vs_benchmark,
+            reward_weight_vs_equal_weight=args.reward_weight_vs_equal_weight,
+            reward_weight_vs_restricted_random=args.reward_weight_vs_restricted_random,
+            reward_weight_vs_markowitz=args.reward_weight_vs_markowitz,
         )
         training_dataset = _downsample_dataset(dataset, max_samples=max_training_samples)
         candidate_name = candidate_spec.name
@@ -617,11 +732,32 @@ def main() -> None:
             f"samples={len(training_dataset.states)}/{len(dataset.states)}.",
             flush=True,
         )
+        emit_training_event(
+            "candidate_started",
+            candidate=candidate_name,
+            output_dir=output_dir,
+            candidate_dir=candidate_dir,
+            objectives=list(candidate_spec.objective_names),
+            training_samples=len(training_dataset.states),
+            evaluation_samples=len(dataset.states),
+            candidate_index=candidate_index,
+            total_candidates=len(candidate_specs),
+            training_config=training_config,
+        )
         result = train_transformer_actor_critic(
             training_dataset,
             training_config,
             device=args.device,
-            progress_callback=lambda _epoch, history, destination=candidate_dir / "training_history.csv": save_frame(history, destination),
+            progress_callback=lambda epoch, history, destination=candidate_dir / "training_history.csv", current_name=candidate_name: (
+                save_frame(history, destination),
+                emit_training_event(
+                    "epoch_metrics",
+                    candidate=current_name,
+                    epoch=int(epoch),
+                    output_dir=output_dir,
+                    metrics=history.tail(1).reset_index().to_dict(orient="records")[0],
+                ),
+            ),
         )
         save_actor_critic_artifacts(result, candidate_dir)
 
@@ -658,6 +794,7 @@ def main() -> None:
         }
         sweep_rows.append(sweep_row)
         save_frame(pd.DataFrame(sweep_rows), output_dir / "model_sweep.csv")
+        emit_training_event("candidate_completed", total_candidates=len(candidate_specs), **sweep_row)
 
         candidate_key = _selection_key(pd.Series(sweep_row))
         if best_key is None or candidate_key > best_key:
@@ -695,7 +832,7 @@ def main() -> None:
         f"Training horizon: {args.duration_key}",
         f"Start date: {args.start_date}",
         f"End date: {args.end_date or 'latest'}",
-        f"Benchmark: {app_config.backtest.benchmark_ticker}",
+        f"Benchmark: {benchmark_label}",
         f"Rebalance frequency: {args.rebalance_frequency}",
         f"Selected candidate: {best_name}",
         f"Selected epoch: {best_result.selected_epoch}",
@@ -713,9 +850,15 @@ def main() -> None:
 
     metadata = {
         "name": args.name,
+        "description": args.description,
+        "tags": list(args.tags),
+        "training_mode": "portfolio_fit",
+        "model_size": int(args.model_size),
         "duration_key": args.duration_key,
         "tickers": tickers,
-        "benchmark_ticker": app_config.backtest.benchmark_ticker,
+        "benchmark_mode": args.benchmark_mode,
+        "benchmark_ticker": benchmark_value,
+        "benchmark_label": benchmark_label,
         "rebalance_frequency": args.rebalance_frequency,
         "lookback_window": lookback_window,
         "candidate_mode": args.candidate_mode,
@@ -724,11 +867,21 @@ def main() -> None:
         "model_path": artifact_paths["model"].as_posix(),
     }
     save_frame(pd.DataFrame([metadata]), output_dir / "fit_metadata.csv")
+    write_model_metadata(output_dir, {**initial_metadata, **metadata})
 
     print("Portfolio model fit complete.")
     print(f"Selected candidate: {best_name}")
     print(best_aggregate_frame.to_string(index=False, float_format=lambda value: f"{value:0.6f}"))
     print(f"Saved promoted model checkpoint to {artifact_paths['model']}")
+    emit_training_event(
+        "run_complete",
+        mode="portfolio_fit",
+        output_dir=output_dir,
+        model_path=artifact_paths["model"],
+        selected_candidate=best_name,
+        selected_epoch=best_result.selected_epoch,
+        candidate_total=len(candidate_specs),
+    )
 
 
 if __name__ == "__main__":

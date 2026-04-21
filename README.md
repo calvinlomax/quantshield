@@ -40,6 +40,14 @@ The desktop app is the main user-facing product. It lets you:
   - a recent price chart
   - technical indicators and analyst ratings
 - Fit a new model for the currently selected portfolio and watch training progress live
+- Launch a new model-training run directly from the Select Model window with:
+  - configurable universe source
+  - configurable benchmark target
+  - editable basic and advanced hyperparameters
+  - a dedicated monitor window with live CLI output
+  - a dedicated monitor window with live training charts
+  - optional 3D candidate-sweep visualization when real sweep data exists
+  - an explicit save step before the model is registered back into the selector
 
 ### Research / Training Stack
 
@@ -221,6 +229,72 @@ The desktop app code lives in [`src/quantshield_app`](src/quantshield_app).
 - Summary popup
 - Equity curve, allocation, and heatmap charts
 
+### Select Model Window
+
+The Select Model dialog now handles both model discovery and model creation.
+
+It supports:
+
+- browsing built-in, experimental, RL, and portfolio-fit checkpoints
+- switching between 10-name and 50-name model families
+- comparing up to two saved models side by side
+- opening `New Model` to launch a training run without leaving the selector
+
+### New Model Workflow
+
+The `New Model` dialog is additive to the existing app. It does not replace the built-in suites and it does not duplicate training logic in the UI.
+
+Instead, the dialog:
+
+- validates the requested run configuration
+- resolves the user-selected training universe
+- resolves the benchmark target:
+  - ticker benchmark
+  - equal weight
+  - Markowitz mean-variance
+- exposes a compact launcher view with:
+  - training universe
+  - basic hyperparameters
+  - dates / horizon / benchmark
+- moves advanced hyperparameters and launch preview into an `Advanced` popup
+- launches one of the existing training scripts asynchronously
+- hides the launcher during execution and opens a dedicated monitor window with:
+  - loss graph
+  - reward / objective graph
+  - benchmark-relative graph
+  - live CLI output
+  - progress bar
+  - optional gradient-descent / candidate-surface view
+- returns to the launcher after training completes, where the user can:
+  - review the completed run
+  - reopen the full graph window
+  - inspect a model summary
+  - explicitly save and register the trained model
+
+The dialog currently supports these training modes:
+
+- `portfolio_fit`
+- `experiment`
+- `rl_policy`
+
+Supported universe sources include:
+
+- current portfolio
+- saved presets
+- canonical/default universe
+- broad config universe
+- manual ticker entry
+- file import
+
+The dialog enforces:
+
+- minimum portfolio size: `5`
+- compatibility with the selected model family size (`10` or `50`)
+- valid benchmark configuration
+- valid date range
+- non-overwriting output paths
+- explicit save-target validation before registration
+
 ### Portfolio Editing
 
 The portfolio editor supports:
@@ -286,6 +360,14 @@ The main scripts live in [`scripts`](scripts).
 - [`scripts/train_benchmark_beating_duration_models.py`](scripts/train_benchmark_beating_duration_models.py): train additional duration models until each horizon has qualified candidates
 - [`scripts/build_oracle_memory_models.py`](scripts/build_oracle_memory_models.py): build deterministic oracle-memory desktop models for 10-slot or 50-slot use
 - [`scripts/fit_portfolio_model.py`](scripts/fit_portfolio_model.py): fit a new model directly to the currently chosen portfolio basket
+
+The desktop app’s `New Model` dialog reuses these scripts rather than re-implementing training in the UI. The scripts now emit structured progress events and metadata so the app can show:
+
+- live loss and reward charts
+- benchmark-relative metrics
+- streamed CLI output
+- candidate sweep summaries
+- saved model metadata for immediate checkpoint discovery
 
 ### Scoring / Evaluation
 
@@ -420,6 +502,7 @@ QuantShield/
         checkpoint_service.py
         input_parser.py
         market_data_service.py
+        model_training_service.py
         portfolio_library_service.py
         replay_service.py
         ticker_info_service.py
@@ -429,6 +512,7 @@ QuantShield/
         charts.py
         checkpoint_dialog.py
         main_window.py
+        new_model_dialog.py
         portfolio_dialogs.py
         ticker_search_dialog.py
         ticker_summary_dialog.py
@@ -465,3 +549,4 @@ python -m pytest tests/test_desktop_app.py
 - Some scripts require the optional PyTorch dependency; the desktop app requires both PyTorch and PySide6.
 - Generated outputs can be large and are intentionally separated across replay suites, experiments, and portfolio-fit directories.
 - Existing built-in model suites are not overwritten by portfolio-specific fits; fit runs are saved separately under `outputs/portfolio_model_fits`.
+- Models created from the `New Model` dialog are saved into the selected output category and are discoverable by the selector immediately after refresh.

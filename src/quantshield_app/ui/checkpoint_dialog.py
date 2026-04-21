@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from typing import Callable
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
@@ -28,7 +30,8 @@ from PySide6.QtWidgets import (
 
 from quantshield.metrics import drawdown_series
 from quantshield.replay_durations import DEFAULT_REPLAY_DURATION_KEY, REPLAY_DURATION_PROFILES
-from quantshield_app.services import CheckpointDescriptor
+from quantshield_app.services import CheckpointDescriptor, PortfolioLibraryService
+from quantshield_app.ui.new_model_dialog import NewModelDialog
 
 ALLOWED_PORTFOLIO_SIZES = (10, 50)
 
@@ -142,6 +145,12 @@ class CheckpointSelectionDialog(QDialog):
         selected_descriptor: CheckpointDescriptor | None = None,
         active_duration_key: str = DEFAULT_REPLAY_DURATION_KEY,
         active_max_portfolio_size: int = 10,
+        current_portfolio_tickers: list[str] | None = None,
+        current_benchmark_ticker: str = "SPY",
+        current_start_date: str = "2018-01-01",
+        current_end_date: str = "2024-01-01",
+        portfolio_library_service: PortfolioLibraryService | None = None,
+        refresh_descriptors_callback: Callable[[Path | None], object] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -153,6 +162,12 @@ class CheckpointSelectionDialog(QDialog):
         self.selected_descriptor: CheckpointDescriptor | None = None
         self.selected_max_portfolio_size = 50 if int(active_max_portfolio_size) > 10 else 10
         self._selected_descriptor = selected_descriptor
+        self._current_portfolio_tickers = list(current_portfolio_tickers or [])
+        self._current_benchmark_ticker = current_benchmark_ticker
+        self._current_start_date = current_start_date
+        self._current_end_date = current_end_date
+        self._portfolio_library_service = portfolio_library_service
+        self._refresh_descriptors_callback = refresh_descriptors_callback
 
         layout = QVBoxLayout(self)
         intro = QLabel(
@@ -273,9 +288,11 @@ class CheckpointSelectionDialog(QDialog):
         content_splitter.setSizes([520, 640])
 
         button_box = QDialogButtonBox(self)
+        self.new_model_button = button_box.addButton("New Model", QDialogButtonBox.ButtonRole.ActionRole)
         self.compare_button = button_box.addButton("Compare Models", QDialogButtonBox.ButtonRole.ActionRole)
         self.select_button = button_box.addButton("Select Model", QDialogButtonBox.ButtonRole.AcceptRole)
         close_button = button_box.addButton("Close", QDialogButtonBox.ButtonRole.RejectRole)
+        self.new_model_button.clicked.connect(self._open_new_model_dialog)
         self.compare_button.clicked.connect(self._show_comparison)
         self.select_button.clicked.connect(self._accept_if_selection)
         close_button.clicked.connect(self.reject)
@@ -482,6 +499,51 @@ class CheckpointSelectionDialog(QDialog):
             return
         dialog = ModelComparisonDialog(descriptors=selected, parent=self)
         dialog.exec()
+
+    def _open_new_model_dialog(self) -> None:
+        dialog = NewModelDialog(
+            current_portfolio_tickers=self._current_portfolio_tickers,
+            current_benchmark_ticker=self._current_benchmark_ticker,
+            current_duration_key=self._active_duration_key(),
+            current_start_date=self._current_start_date,
+            current_end_date=self._current_end_date,
+            current_max_portfolio_size=self._active_portfolio_size(),
+            portfolio_library_service=self._portfolio_library_service,
+            refresh_models_callback=self._refresh_models,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _refresh_models(self, preferred_model_path: Path | None = None) -> None:
+        if self._refresh_descriptors_callback is None:
+            return
+        refreshed = self._refresh_descriptors_callback(preferred_model_path)
+        matched: CheckpointDescriptor | None = None
+        descriptors: list[CheckpointDescriptor] | None = None
+        if isinstance(refreshed, tuple) and len(refreshed) == 2:
+            candidate_descriptors, candidate_match = refreshed
+            if isinstance(candidate_descriptors, list):
+                descriptors = candidate_descriptors
+            if isinstance(candidate_match, CheckpointDescriptor):
+                matched = candidate_match
+        elif isinstance(refreshed, list):
+            descriptors = refreshed
+        if descriptors is None:
+            return
+
+        self._all_descriptors = list(descriptors)
+        if matched is None and preferred_model_path is not None:
+            matched = next((descriptor for descriptor in self._all_descriptors if descriptor.path == preferred_model_path), None)
+        if matched is not None:
+            portfolio_size_index = self.portfolio_size_combo.findData(matched.supported_portfolio_size)
+            if portfolio_size_index >= 0:
+                self.portfolio_size_combo.setCurrentIndex(portfolio_size_index)
+            self._selected_descriptor = matched
+        self._refresh_table()
+        if matched is not None:
+            self._select_descriptor(matched)
+            self.selected_descriptor = matched
+            self._on_selection_changed()
 
     def _accept_if_selection(self) -> None:
         if self.selected_descriptor is None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from pathlib import Path
 import re
 from typing import Iterable
@@ -79,6 +80,12 @@ class CheckpointDescriptor:
     all_significant: bool | None = None
     all_mean_excess_return: float | None = None
     all_t_statistic: float | None = None
+    user_name: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    training_mode: str | None = None
+    benchmark_label: str | None = None
+    universe_label: str | None = None
 
     @property
     def uses_placeholder_tickers(self) -> bool:
@@ -102,7 +109,7 @@ class CheckpointDescriptor:
     @property
     def display_name(self) -> str:
         focus = DURATION_FOCUS_LABELS.get(self.duration_key or "", "Custom Horizon")
-        candidate = CANDIDATE_DISPLAY_LABELS.get(self.candidate_name or "", "General")
+        candidate = self.user_name or CANDIDATE_DISPLAY_LABELS.get(self.candidate_name or "", "General")
         quality = "Validated" if self.validation_significant else ("Benchmark+" if self.all_significant else "Exploratory")
         return f"{focus} {candidate} ({quality})"
 
@@ -128,6 +135,12 @@ class CheckpointDescriptor:
 
     @property
     def model_type_label(self) -> str:
+        if self.training_mode == "portfolio_fit":
+            return "Fit Model"
+        if self.training_mode == "experiment":
+            return "Candidate Model"
+        if self.training_mode == "rl_policy":
+            return "RL Policy"
         if "portfolio_model_fits" in self.path.parts:
             return "Fit Model"
         if "candidate_models" in self.path.parts:
@@ -144,6 +157,8 @@ class CheckpointDescriptor:
 
     @property
     def variant_label(self) -> str:
+        if self.user_name:
+            return self.user_name
         return CANDIDATE_DISPLAY_LABELS.get(self.candidate_name or "", self.candidate_name or "General")
 
     @property
@@ -152,7 +167,11 @@ class CheckpointDescriptor:
 
     @property
     def updated_at(self) -> datetime:
-        return datetime.fromtimestamp(self.path.stat().st_mtime)
+        try:
+            timestamp = self.path.stat().st_mtime
+        except FileNotFoundError:
+            timestamp = 0.0
+        return datetime.fromtimestamp(timestamp)
 
     @property
     def updated_label(self) -> str:
@@ -206,6 +225,10 @@ class CheckpointDescriptor:
             f"All-sample significant: {self.all_significant if self.all_significant is not None else 'unknown'}",
             f"All-sample mean excess: {self.all_mean_excess_return:.4%}" if self.all_mean_excess_return is not None else "All-sample mean excess: unknown",
             f"All-sample t-statistic: {self.all_t_statistic:.3f}" if self.all_t_statistic is not None else "All-sample t-statistic: unknown",
+            f"Benchmark: {self.benchmark_label}" if self.benchmark_label else "Benchmark: unknown",
+            f"Universe: {self.universe_label}" if self.universe_label else "Universe: unknown",
+            f"Description: {self.description}" if self.description else "Description: —",
+            f"Tags: {', '.join(self.tags)}" if self.tags else "Tags: —",
             f"Path: {self.path.as_posix()}",
         ]
         return "\n".join(lines)
@@ -218,9 +241,15 @@ class CheckpointService:
         materialized_roots = tuple(search_roots)
         self.search_roots = [Path(root) for root in materialized_roots]
         self._uses_default_roots = materialized_roots == DEFAULT_CHECKPOINT_ROOTS
+        self._last_discovery_warnings: list[str] = []
+
+    @property
+    def last_discovery_warnings(self) -> list[str]:
+        return list(self._last_discovery_warnings)
 
     def discover_checkpoints(self, *, duration_key: str | None = None) -> list[CheckpointDescriptor]:
         """Return sorted checkpoint descriptors for known model files."""
+        self._last_discovery_warnings = []
         preferred_duration = duration_key or DEFAULT_REPLAY_DURATION_KEY
         preferred_root = checkpoint_root_for_duration(preferred_duration)
         roots = list(self.search_roots)
@@ -241,7 +270,10 @@ class CheckpointService:
 
         descriptors: list[CheckpointDescriptor] = []
         for path in candidates:
-            descriptors.append(self._read_descriptor(path))
+            try:
+                descriptors.append(self._read_descriptor(path))
+            except Exception as exc:
+                self._last_discovery_warnings.append(f"Skipped unreadable checkpoint {path.as_posix()}: {exc}")
         descriptors = self._deduplicate_descriptors(descriptors)
 
         descriptors.sort(
@@ -314,6 +346,12 @@ class CheckpointService:
             all_significant=metadata["all_significant"],
             all_mean_excess_return=metadata["all_mean_excess_return"],
             all_t_statistic=metadata["all_t_statistic"],
+            user_name=metadata["user_name"],
+            description=metadata["description"],
+            tags=metadata["tags"],
+            training_mode=metadata["training_mode"],
+            benchmark_label=metadata["benchmark_label"],
+            universe_label=metadata["universe_label"],
         )
 
     @staticmethod
@@ -326,7 +364,33 @@ class CheckpointService:
             "all_significant": None,
             "all_mean_excess_return": None,
             "all_t_statistic": None,
+            "user_name": None,
+            "description": None,
+            "tags": None,
+            "training_mode": None,
+            "benchmark_label": None,
+            "universe_label": None,
         }
+
+        metadata_path = directory / "model_metadata.json"
+        if metadata_path.exists():
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+            if isinstance(payload, dict):
+                metadata["user_name"] = str(payload.get("name")).strip() if payload.get("name") else None
+                metadata["description"] = str(payload.get("description")).strip() if payload.get("description") else None
+                tags = payload.get("tags")
+                if isinstance(tags, list):
+                    metadata["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
+                metadata["training_mode"] = str(payload.get("training_mode")).strip() if payload.get("training_mode") else None
+                metadata["benchmark_label"] = (
+                    str(payload.get("benchmark_label")).strip() if payload.get("benchmark_label") else None
+                )
+                tickers = payload.get("tickers")
+                if isinstance(tickers, list) and tickers:
+                    metadata["universe_label"] = ", ".join(str(ticker).strip().upper() for ticker in tickers if str(ticker).strip())
 
         for summary_path in (
             directory / "random_sp500_training_summary.txt",

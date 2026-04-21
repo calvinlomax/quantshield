@@ -40,6 +40,7 @@ class RandomSP500TrainingSpec:
     candidate_pool_size: int = 80
     random_universes: int = 64
     portfolio_size: int = 10
+    candidate_tickers: tuple[str, ...] | None = None
     random_seed: int = 42
     rebalance_frequency: str = "W-FRI"
     lookback_window: int = 63
@@ -437,11 +438,12 @@ def build_random_sp500_dataset(
         else spec.benchmark_mode
     )
     use_equal_weight_benchmark = benchmark_ticker == "__equal_weight__"
+    use_markowitz_benchmark = benchmark_ticker == "__markowitz__"
     cached_prices = _load_largest_cached_price_panel(
         loader,
         start_date=spec.start_date,
         end_date=spec.end_date,
-        benchmark_ticker=None if use_equal_weight_benchmark else benchmark_ticker,
+        benchmark_ticker=None if use_equal_weight_benchmark or use_markowitz_benchmark else benchmark_ticker,
     )
     if cached_prices is not None:
         cached_constituents = [
@@ -456,10 +458,13 @@ def build_random_sp500_dataset(
             start_date=spec.start_date,
             end_date=spec.end_date,
         )
-    constituents = cached_constituents if len(cached_constituents) >= spec.candidate_pool_size else fetch_sp500_constituents()
+    if spec.candidate_tickers:
+        constituents = [str(ticker).strip().upper() for ticker in spec.candidate_tickers if str(ticker).strip()]
+    else:
+        constituents = cached_constituents if len(cached_constituents) >= spec.candidate_pool_size else fetch_sp500_constituents()
     candidate_pool, universes = sample_random_universes(
         constituents,
-        candidate_pool_size=spec.candidate_pool_size,
+        candidate_pool_size=min(spec.candidate_pool_size, len(constituents)),
         random_universes=spec.random_universes,
         portfolio_size=spec.portfolio_size,
         random_seed=spec.random_seed,
@@ -467,7 +472,7 @@ def build_random_sp500_dataset(
 
     rng = np.random.default_rng(spec.random_seed)
     all_tickers = list(candidate_pool)
-    if not use_equal_weight_benchmark and benchmark_ticker not in all_tickers:
+    if not use_equal_weight_benchmark and not use_markowitz_benchmark and benchmark_ticker not in all_tickers:
         all_tickers.append(benchmark_ticker)
     if cached_prices is not None and set(all_tickers).issubset(cached_prices.columns):
         prices = cached_prices.loc[:, all_tickers].copy()
@@ -486,7 +491,11 @@ def build_random_sp500_dataset(
         forward_fill=base_config.preprocessing.forward_fill_prices,
     )
     returns = compute_returns(clean_prices, return_type=base_config.preprocessing.return_type)
-    benchmark_returns = returns[benchmark_ticker] if not use_equal_weight_benchmark and benchmark_ticker in returns.columns else None
+    benchmark_returns = (
+        returns[benchmark_ticker]
+        if not use_equal_weight_benchmark and not use_markowitz_benchmark and benchmark_ticker in returns.columns
+        else None
+    )
     schedule = _rebalance_schedule(returns.index, spec.rebalance_frequency)
     eligible_dates = [
         rebalance_date
@@ -551,6 +560,8 @@ def build_random_sp500_dataset(
             risk_aversion=spec.markowitz_risk_aversion,
             max_weight=spec.markowitz_max_weight,
         )
+        if use_markowitz_benchmark:
+            benchmark_reward = markowitz_reward
         objective_actions: dict[str, np.ndarray] = {}
         objective_raw_rewards: dict[str, float] = {}
         objective_excess_rewards: dict[str, float] = {}

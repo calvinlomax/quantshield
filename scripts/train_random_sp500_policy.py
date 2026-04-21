@@ -14,6 +14,7 @@ if str(ROOT / "src") not in sys.path:
 
 from quantshield.config import load_config
 from quantshield.replay_durations import REPLAY_DURATION_PROFILES, checkpoint_root_for_duration, get_replay_duration_profile
+from quantshield.training_logging import emit_training_event, write_model_metadata
 from quantshield.rl import RLTrainingConfig, save_actor_critic_artifacts, train_transformer_actor_critic
 from quantshield.sp500_random_training import RandomSP500TrainingSpec, build_random_sp500_dataset
 from quantshield.tuned_suite import TUNED_PRESETS
@@ -25,6 +26,10 @@ def parse_args() -> argparse.Namespace:
         description="Train the actor-critic on randomized 10-stock S&P 500 portfolios and promote the best model."
     )
     parser.add_argument("--config", default="config/default_config.yaml", help="Base QuantShield config.")
+    parser.add_argument("--name", default="", help="Optional user-facing run name.")
+    parser.add_argument("--description", default="", help="Optional free-form description persisted with the model.")
+    parser.add_argument("--tags", nargs="*", default=[], help="Optional tags persisted with the model.")
+    parser.add_argument("--model-size", type=int, choices=(10, 50), default=10, help="Target model family width.")
     parser.add_argument("--output-dir", default="outputs/rl_policy", help="Directory where the promoted model artifacts will be written.")
     parser.add_argument(
         "--duration-key",
@@ -36,12 +41,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-pool-size", type=int, default=80, help="Random S&P 500 stock pool size used to draw universes.")
     parser.add_argument("--random-universes", type=int, help="Number of random 10-stock universes to generate. Defaults to 256.")
     parser.add_argument("--portfolio-size", type=int, default=10, help="Stocks per random universe.")
+    parser.add_argument("--universe-tickers", nargs="+", help="Optional explicit candidate universe instead of S&P 500 sampling.")
+    parser.add_argument(
+        "--benchmark",
+        default="__config__",
+        help="Benchmark ticker or sentinel (__config__, __equal_weight__, __markowitz__).",
+    )
     parser.add_argument("--epochs", type=int, default=128, help="Base epoch budget used when generating candidate configs.")
     parser.add_argument("--lookback-window", type=int, default=63, help="Trailing return window used to build states.")
     parser.add_argument("--hidden-dim", type=int, default=224, help="Base transformer hidden dimension for the candidate sweep.")
     parser.add_argument("--attention-heads", type=int, default=8, help="Base attention-head count for the candidate sweep.")
     parser.add_argument("--attention-layers", type=int, default=4, help="Base attention-layer count for the candidate sweep.")
     parser.add_argument("--batch-size", type=int, default=64, help="Base mini-batch size for the candidate sweep.")
+    parser.add_argument("--learning-rate", type=float, default=8e-4, help="Base learning rate for the candidate sweep.")
+    parser.add_argument("--weight-decay", type=float, default=2e-5, help="Base weight decay for the candidate sweep.")
+    parser.add_argument("--dropout", type=float, default=0.08, help="Base dropout for the candidate sweep.")
+    parser.add_argument("--actor-bc-weight", type=float, default=1.75, help="Base actor BC weight for the candidate sweep.")
+    parser.add_argument("--entropy-weight", type=float, default=5e-4, help="Base entropy weight for the candidate sweep.")
+    parser.add_argument("--validation-fraction", type=float, default=0.20, help="Validation split fraction.")
+    parser.add_argument(
+        "--optimizer",
+        choices=["adamw", "adam"],
+        default="adamw",
+        help="Optimizer used during candidate training.",
+    )
+    parser.add_argument("--checkpoint-frequency", type=int, default=0, help="Optional intermediate checkpoint cadence.")
+    parser.add_argument("--early-stopping-patience", type=int, default=0, help="Optional validation patience.")
     parser.add_argument("--rebalance-frequency", default="W-FRI", help="Forward holding-period frequency used for randomized samples.")
     parser.add_argument(
         "--objectives",
@@ -91,6 +116,36 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def default_cli_options() -> dict[str, object]:
+    """Expose script defaults for the desktop app."""
+    return {
+        "mode": "experiment",
+        "epochs": 128,
+        "lookback_window": 63,
+        "hidden_dim": 224,
+        "attention_heads": 8,
+        "attention_layers": 4,
+        "batch_size": 64,
+        "learning_rate": 8e-4,
+        "weight_decay": 2e-5,
+        "dropout": 0.08,
+        "actor_bc_weight": 1.75,
+        "entropy_weight": 5e-4,
+        "validation_fraction": 0.20,
+        "optimizer": "adamw",
+        "checkpoint_frequency": 0,
+        "early_stopping_patience": 0,
+        "candidate_pool_size": 80,
+        "random_universes": 256,
+        "seed": 42,
+        "reward_weight_raw": 0.05,
+        "reward_weight_vs_benchmark": 0.20,
+        "reward_weight_vs_equal_weight": 0.10,
+        "reward_weight_vs_restricted_random": 0.10,
+        "reward_weight_vs_markowitz": 0.55,
+    }
+
+
 def _build_candidate_configs(args: argparse.Namespace) -> list[tuple[str, RLTrainingConfig]]:
     """Return an M2-friendly sweep of actor-critic candidate configs."""
     base_epochs = max(int(args.epochs), 32)
@@ -99,6 +154,15 @@ def _build_candidate_configs(args: argparse.Namespace) -> list[tuple[str, RLTrai
     base_layers = int(args.attention_layers)
     base_batch = int(args.batch_size)
     base_seed = int(args.seed)
+    base_learning_rate = float(args.learning_rate)
+    base_weight_decay = float(args.weight_decay)
+    base_dropout = float(args.dropout)
+    base_actor_bc_weight = float(args.actor_bc_weight)
+    base_entropy_weight = float(args.entropy_weight)
+    base_validation_fraction = float(args.validation_fraction)
+    base_optimizer = str(args.optimizer or "adamw")
+    base_checkpoint_frequency = max(int(args.checkpoint_frequency), 0)
+    base_early_stopping_patience = max(int(args.early_stopping_patience), 0)
 
     candidate_configs = [
         (
@@ -108,14 +172,18 @@ def _build_candidate_configs(args: argparse.Namespace) -> list[tuple[str, RLTrai
                 hidden_dim=192,
                 attention_heads=6,
                 attention_layers=4,
-                dropout=0.05,
-                learning_rate=8e-4,
-                weight_decay=2e-5,
+                dropout=max(0.04, base_dropout - 0.02),
+                learning_rate=base_learning_rate,
+                weight_decay=base_weight_decay,
                 batch_size=min(base_batch, 64),
                 epochs=base_epochs,
-                actor_bc_weight=2.5,
-                entropy_weight=5e-4,
+                actor_bc_weight=max(base_actor_bc_weight, 0.5),
+                entropy_weight=max(base_entropy_weight, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=base_seed,
+                optimizer_name=base_optimizer,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
         ),
         (
@@ -125,14 +193,18 @@ def _build_candidate_configs(args: argparse.Namespace) -> list[tuple[str, RLTrai
                 hidden_dim=base_hidden,
                 attention_heads=base_heads,
                 attention_layers=base_layers,
-                dropout=0.06,
-                learning_rate=7e-4,
-                weight_decay=2e-5,
+                dropout=max(0.05, base_dropout - 0.01),
+                learning_rate=base_learning_rate * 0.9,
+                weight_decay=base_weight_decay,
                 batch_size=base_batch,
                 epochs=base_epochs + 16,
-                actor_bc_weight=2.0,
-                entropy_weight=5e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.95, 0.5),
+                entropy_weight=max(base_entropy_weight, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=base_seed + 1,
+                optimizer_name=base_optimizer,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
         ),
         (
@@ -142,14 +214,18 @@ def _build_candidate_configs(args: argparse.Namespace) -> list[tuple[str, RLTrai
                 hidden_dim=256,
                 attention_heads=8,
                 attention_layers=4,
-                dropout=0.08,
-                learning_rate=6e-4,
-                weight_decay=2e-5,
+                dropout=max(0.07, base_dropout),
+                learning_rate=base_learning_rate * 0.8,
+                weight_decay=base_weight_decay * 1.2,
                 batch_size=base_batch,
                 epochs=base_epochs + 32,
-                actor_bc_weight=1.75,
-                entropy_weight=5e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.9, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.8, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=base_seed + 2,
+                optimizer_name=base_optimizer,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
         ),
         (
@@ -159,14 +235,18 @@ def _build_candidate_configs(args: argparse.Namespace) -> list[tuple[str, RLTrai
                 hidden_dim=224,
                 attention_heads=8,
                 attention_layers=5,
-                dropout=0.08,
-                learning_rate=5e-4,
-                weight_decay=3e-5,
+                dropout=max(0.07, base_dropout),
+                learning_rate=base_learning_rate * 0.7,
+                weight_decay=base_weight_decay * 1.4,
                 batch_size=base_batch,
                 epochs=base_epochs + 48,
-                actor_bc_weight=1.5,
-                entropy_weight=3e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.85, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.7, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=base_seed + 3,
+                optimizer_name=base_optimizer,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
         ),
         (
@@ -176,14 +256,18 @@ def _build_candidate_configs(args: argparse.Namespace) -> list[tuple[str, RLTrai
                 hidden_dim=256,
                 attention_heads=8,
                 attention_layers=5,
-                dropout=0.10,
-                learning_rate=4e-4,
-                weight_decay=5e-5,
+                dropout=max(0.09, base_dropout + 0.02),
+                learning_rate=base_learning_rate * 0.6,
+                weight_decay=base_weight_decay * 1.8,
                 batch_size=base_batch,
                 epochs=base_epochs + 64,
-                actor_bc_weight=1.25,
-                entropy_weight=2e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.75, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.55, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=base_seed + 4,
+                optimizer_name=base_optimizer,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
         ),
         (
@@ -193,14 +277,18 @@ def _build_candidate_configs(args: argparse.Namespace) -> list[tuple[str, RLTrai
                 hidden_dim=320,
                 attention_heads=10,
                 attention_layers=6,
-                dropout=0.10,
-                learning_rate=3.5e-4,
-                weight_decay=6e-5,
+                dropout=max(0.09, base_dropout + 0.02),
+                learning_rate=base_learning_rate * 0.5,
+                weight_decay=base_weight_decay * 2.2,
                 batch_size=min(base_batch, 48),
                 epochs=base_epochs + 80,
-                actor_bc_weight=1.10,
-                entropy_weight=1.5e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.65, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.45, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=base_seed + 5,
+                optimizer_name=base_optimizer,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
         ),
         (
@@ -210,14 +298,18 @@ def _build_candidate_configs(args: argparse.Namespace) -> list[tuple[str, RLTrai
                 hidden_dim=384,
                 attention_heads=12,
                 attention_layers=6,
-                dropout=0.12,
-                learning_rate=3e-4,
-                weight_decay=8e-5,
+                dropout=max(0.11, base_dropout + 0.04),
+                learning_rate=base_learning_rate * 0.4,
+                weight_decay=base_weight_decay * 2.8,
                 batch_size=min(base_batch, 32),
                 epochs=base_epochs + 96,
-                actor_bc_weight=1.0,
-                entropy_weight=1.0e-4,
+                actor_bc_weight=max(base_actor_bc_weight * 0.58, 0.5),
+                entropy_weight=max(base_entropy_weight * 0.35, 1e-5),
+                validation_fraction=base_validation_fraction,
                 seed=base_seed + 6,
+                optimizer_name=base_optimizer,
+                checkpoint_frequency=base_checkpoint_frequency,
+                early_stopping_patience=base_early_stopping_patience,
             ),
         ),
     ]
@@ -300,6 +392,15 @@ def _write_training_summary(
 
 def main() -> None:
     args = parse_args()
+    run_name = args.name.strip() or Path(args.output_dir).name
+    resolved_benchmark = str(args.benchmark).strip()
+    if not resolved_benchmark.startswith("__"):
+        resolved_benchmark = resolved_benchmark.upper()
+    resolved_benchmark_label = {
+        "__config__": "Config Benchmark",
+        "__equal_weight__": "Equal Weight (training universe)",
+        "__markowitz__": "Markowitz Mean-Variance",
+    }.get(resolved_benchmark, resolved_benchmark)
     duration_profile = get_replay_duration_profile(args.duration_key) if args.duration_key else None
     if duration_profile is not None:
         if args.output_dir == "outputs/rl_policy":
@@ -310,12 +411,76 @@ def main() -> None:
     app_config.data.start_date = args.start_date
     app_config.data.end_date = args.end_date
     app_config.data.force_refresh = args.force_refresh
+    if resolved_benchmark != "__config__":
+        app_config.backtest.benchmark_ticker = resolved_benchmark
     random_universes = args.random_universes or 256
+    explicit_universe = [str(ticker).strip().upper() for ticker in (args.universe_tickers or []) if str(ticker).strip()]
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    initial_metadata = {
+        "name": run_name,
+        "description": args.description,
+        "tags": list(args.tags),
+        "training_mode": "experiment",
+        "model_size": int(args.portfolio_size),
+        "duration_key": args.duration_key,
+        "tickers": explicit_universe,
+        "benchmark_mode": resolved_benchmark,
+        "benchmark_label": resolved_benchmark_label,
+        "rebalance_frequency": args.rebalance_frequency,
+        "lookback_window": int(args.lookback_window),
+        "output_dir": output_dir,
+        "command": [sys.executable, "scripts/train_random_sp500_policy.py", *sys.argv[1:]],
+        "hyperparameters": {
+            "epochs": int(args.epochs),
+            "batch_size": int(args.batch_size),
+            "seed": int(args.seed),
+            "learning_rate": float(args.learning_rate),
+            "weight_decay": float(args.weight_decay),
+            "dropout": float(args.dropout),
+            "hidden_dim": int(args.hidden_dim),
+            "attention_heads": int(args.attention_heads),
+            "attention_layers": int(args.attention_layers),
+            "actor_bc_weight": float(args.actor_bc_weight),
+            "entropy_weight": float(args.entropy_weight),
+            "validation_fraction": float(args.validation_fraction),
+            "optimizer": str(args.optimizer),
+            "checkpoint_frequency": int(args.checkpoint_frequency),
+            "early_stopping_patience": int(args.early_stopping_patience),
+            "candidate_pool_size": int(args.candidate_pool_size),
+            "random_universes": int(random_universes),
+            "reward_weight_raw": float(args.reward_weight_raw),
+            "reward_weight_vs_benchmark": float(args.reward_weight_vs_benchmark),
+            "reward_weight_vs_equal_weight": float(args.reward_weight_vs_equal_weight),
+            "reward_weight_vs_restricted_random": float(args.reward_weight_vs_restricted_random),
+            "reward_weight_vs_markowitz": float(args.reward_weight_vs_markowitz),
+        },
+    }
+    write_model_metadata(output_dir, initial_metadata)
 
     print(
         f"Preparing objective-weighted random S&P 500 dataset with {random_universes} universes, "
         f"{args.portfolio_size} stocks per universe.",
         flush=True,
+    )
+    if explicit_universe:
+        print(f"Resolved training universe: {', '.join(explicit_universe)}", flush=True)
+    print(f"Resolved benchmark: {resolved_benchmark_label}", flush=True)
+    candidate_configs = _build_candidate_configs(args)
+    emit_training_event(
+        "run_initialized",
+        mode="experiment",
+        name=run_name,
+        duration_key=args.duration_key,
+        output_dir=output_dir,
+        tickers=explicit_universe,
+        benchmark_mode=resolved_benchmark,
+        benchmark_label=resolved_benchmark_label,
+        model_size=int(args.portfolio_size),
+        rebalance_frequency=args.rebalance_frequency,
+        lookback_window=int(args.lookback_window),
+        candidate_total=len(candidate_configs),
+        hyperparameters=initial_metadata["hyperparameters"],
     )
     dataset, summary = build_random_sp500_dataset(
         app_config,
@@ -325,12 +490,14 @@ def main() -> None:
             candidate_pool_size=args.candidate_pool_size,
             random_universes=random_universes,
             portfolio_size=args.portfolio_size,
+            candidate_tickers=tuple(explicit_universe) if explicit_universe else None,
             random_seed=args.seed,
             rebalance_frequency=args.rebalance_frequency,
             lookback_window=args.lookback_window,
             force_refresh=args.force_refresh,
             objectives=tuple(args.objectives),
             objective_suite_root=args.objective_suite_root,
+            benchmark_mode=resolved_benchmark,
             reward_weight_raw=args.reward_weight_raw,
             reward_weight_vs_benchmark=args.reward_weight_vs_benchmark,
             reward_weight_vs_equal_weight=args.reward_weight_vs_equal_weight,
@@ -344,7 +511,6 @@ def main() -> None:
         flush=True,
     )
 
-    output_dir = Path(args.output_dir)
     candidate_root = output_dir / "candidate_models"
     candidate_root.mkdir(parents=True, exist_ok=True)
 
@@ -353,14 +519,34 @@ def main() -> None:
     best_key: tuple[float, ...] | None = None
     sweep_rows: list[dict[str, object]] = []
 
-    for candidate_name, training_config in _build_candidate_configs(args):
+    for candidate_index, (candidate_name, training_config) in enumerate(candidate_configs, start=1):
         print(
             f"Training candidate {candidate_name}: hidden_dim={training_config.hidden_dim}, "
             f"heads={training_config.attention_heads}, layers={training_config.attention_layers}, "
             f"epochs={training_config.epochs}.",
             flush=True,
         )
-        result = train_transformer_actor_critic(dataset, training_config, device=args.device)
+        emit_training_event(
+            "candidate_started",
+            candidate=candidate_name,
+            output_dir=output_dir,
+            candidate_dir=candidate_root / candidate_name,
+            candidate_index=candidate_index,
+            total_candidates=len(candidate_configs),
+            training_config=training_config,
+        )
+        result = train_transformer_actor_critic(
+            dataset,
+            training_config,
+            device=args.device,
+            progress_callback=lambda epoch, history, current_name=candidate_name: emit_training_event(
+                "epoch_metrics",
+                candidate=current_name,
+                epoch=int(epoch),
+                output_dir=output_dir,
+                metrics=history.tail(1).reset_index().to_dict(orient="records")[0],
+            ),
+        )
         candidate_dir = candidate_root / candidate_name
         save_actor_critic_artifacts(result, candidate_dir)
 
@@ -401,6 +587,7 @@ def main() -> None:
                 "candidate_dir": str(candidate_dir),
             }
         )
+        emit_training_event("candidate_completed", total_candidates=len(candidate_configs), **sweep_rows[-1])
 
         candidate_key = _selection_key(result)
         if best_key is None or candidate_key > best_key:
@@ -437,6 +624,25 @@ def main() -> None:
     print("")
     print(f"Saved promoted model checkpoint to {artifact_paths['model']}")
     print(f"Saved model sweep table to {output_dir / 'model_sweep.csv'}")
+    write_model_metadata(
+        output_dir,
+        {
+            **initial_metadata,
+            "selected_candidate": best_name,
+            "selected_epoch": best_result.selected_epoch,
+            "model_path": artifact_paths["model"],
+            "resolved_training_universe": explicit_universe,
+        },
+    )
+    emit_training_event(
+        "run_complete",
+        mode="experiment",
+        output_dir=output_dir,
+        model_path=artifact_paths["model"],
+        selected_candidate=best_name,
+        selected_epoch=best_result.selected_epoch,
+        candidate_total=len(candidate_configs),
+    )
 
 
 if __name__ == "__main__":
