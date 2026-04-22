@@ -1592,6 +1592,89 @@ def test_training_monitor_dialog_updates_epoch_label_and_uses_dynamic_loss_axis(
     app.processEvents()
 
 
+def test_training_monitor_dialog_close_button_stays_enabled_while_running() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.ui.new_model_dialog import TrainingMonitorDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    dialog = TrainingMonitorDialog()
+    dialog.set_running(True, state_label="running")
+
+    assert dialog.close_button.isEnabled() is True
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_new_model_dialog_can_close_monitor_with_confirmation(monkeypatch, tmp_path: Path) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.ui.new_model_dialog import NewModelDialog, TrainingMonitorDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    dialog = NewModelDialog(
+        current_portfolio_tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        current_benchmark_ticker="SPY",
+        current_duration_key="1y",
+        current_start_date="2024-01-02",
+        current_end_date="2024-12-31",
+        current_max_portfolio_size=10,
+    )
+    dialog._last_output_dir = tmp_path / "run"
+    dialog._monitor_dialog = TrainingMonitorDialog()
+    dialog._monitor_dialog.finished.connect(dialog._on_monitor_closed)
+    dialog.hide()
+    monkeypatch.setattr(
+        "quantshield_app.ui.new_model_dialog.QMessageBox.question",
+        lambda *args, **kwargs: qtwidgets.QMessageBox.StandardButton.Yes,
+    )
+
+    dialog._request_close_monitor()
+    app.processEvents()
+
+    assert dialog.isVisible() is True
+    assert dialog._monitor_dialog is None
+    assert dialog.start_button.isEnabled() is True
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_new_model_dialog_handles_failed_run_after_monitor_was_closed(monkeypatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.ui.new_model_dialog import NewModelDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    dialog = NewModelDialog(
+        current_portfolio_tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        current_benchmark_ticker="SPY",
+        current_duration_key="1y",
+        current_start_date="2024-01-02",
+        current_end_date="2024-12-31",
+        current_max_portfolio_size=10,
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "quantshield_app.ui.new_model_dialog.QMessageBox.warning",
+        lambda _parent, _title, text: warnings.append(text),
+    )
+    dialog.start_button.setEnabled(False)
+    dialog.start_button.setVisible(False)
+
+    dialog._on_run_finished({"success": False, "cancelled": False, "exit_code": 2})
+    app.processEvents()
+
+    assert dialog.isVisible() is True
+    assert dialog.start_button.isVisible() is True
+    assert dialog.start_button.isEnabled() is True
+    assert warnings == ["Training failed with exit code 2."]
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_speed_display_combo_box_uses_closed_speed_suffix() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")

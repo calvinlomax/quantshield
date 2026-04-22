@@ -394,7 +394,7 @@ class TrainingMonitorDialog(QDialog):
         if state_label is not None:
             self.state_label.setText(f"State: {state_label}")
         self.cancel_button.setEnabled(running)
-        self.close_button.setEnabled(not running)
+        self.close_button.setEnabled(True)
         if running:
             if self._candidate_total > 0:
                 self.progress_bar.setRange(0, self._candidate_total)
@@ -1388,10 +1388,12 @@ class NewModelDialog(QDialog):
         self._last_run_message = None
         self.metadata_tabs.setVisible(False)
         self._populate_save_categories()
+        self.start_button.setEnabled(False)
+        self.state_label.setText("State: running")
 
         self._monitor_dialog = TrainingMonitorDialog()
         self._monitor_dialog.cancel_button.clicked.connect(self._cancel_training)
-        self._monitor_dialog.close_button.clicked.connect(self._monitor_dialog.accept)
+        self._monitor_dialog.close_button.clicked.connect(self._request_close_monitor)
         self._monitor_dialog.finished.connect(self._on_monitor_closed)
         self._monitor_dialog.set_running(True, state_label="running")
         self._monitor_dialog.set_compute_plan(self._compute_plan_text)
@@ -1412,6 +1414,18 @@ class NewModelDialog(QDialog):
         if confirm != QMessageBox.StandardButton.Yes:
             return
         self._training_service.cancel()
+
+    def _request_close_monitor(self) -> None:
+        if self._monitor_dialog is None:
+            return
+        confirm = QMessageBox.question(
+            self._monitor_dialog,
+            "Close Training Monitor",
+            "Are you sure you want to close the training monitor?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._monitor_dialog.accept()
 
     def _append_log(self, line: str, _stream: str) -> None:
         self._all_logs.append(line)
@@ -1505,6 +1519,20 @@ class NewModelDialog(QDialog):
             self._monitor_dialog.set_running(False, state_label="done" if success else ("cancelled" if cancelled else "failed"))
         if not success and not cancelled:
             self._last_run_message = f"Training failed with exit code {result.get('exit_code')}."
+        if self._monitor_dialog is None:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            self.setFocus()
+            if self._run_complete:
+                self._set_post_run_state()
+            else:
+                self._set_pre_run_state()
+                if self._last_run_message:
+                    QMessageBox.warning(self, "New Model", self._last_run_message)
+                    self.raise_()
+                    self.activateWindow()
+                    self.setFocus()
 
     def _on_monitor_closed(self, _result: int) -> None:
         if self._monitor_dialog is not None:
@@ -1515,6 +1543,10 @@ class NewModelDialog(QDialog):
         self.raise_()
         self.activateWindow()
         self.setFocus()
+        if self._training_service.is_running:
+            self.state_label.setText("State: running")
+            self.start_button.setEnabled(False)
+            return
         if self._run_complete:
             self._set_post_run_state()
         else:
