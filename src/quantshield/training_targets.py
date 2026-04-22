@@ -84,46 +84,56 @@ def build_forward_weight_histories(
         softmax = pd.Series(np.exp(6.0 * logits), index=tickers)
         oracle_softmax_weights = softmax / float(softmax.sum())
 
-        annualized_mean = forward_segment.mean() * 252
-        annualized_covariance = forward_segment.cov() * 252
-
-        mean_variance = optimize_portfolio(
-            annualized_mean,
-            annualized_covariance,
-            OptimizationConfig(
-                objective="mean_variance",
-                risk_aversion=0.35,
-                long_only=True,
-                min_weight=0.0,
-                max_weight=1.0,
-                turnover_penalty=0.0,
-            ),
-            asset_class_map=asset_class_map,
-        ).weights
-        risk_parity = optimize_portfolio(
-            annualized_mean,
-            annualized_covariance,
-            OptimizationConfig(
-                objective="risk_parity",
-                long_only=True,
-                min_weight=0.0,
-                max_weight=1.0,
-                turnover_penalty=0.0,
-            ),
-            asset_class_map=asset_class_map,
-        ).weights
-        min_variance = optimize_portfolio(
-            annualized_mean,
-            annualized_covariance,
-            OptimizationConfig(
-                objective="min_variance",
-                long_only=True,
-                min_weight=0.0,
-                max_weight=1.0,
-                turnover_penalty=0.0,
-            ),
-            asset_class_map=asset_class_map,
-        ).weights
+        fallback_weights = pd.Series(1.0 / len(tickers), index=tickers)
+        if len(forward_segment.dropna(how="any")) < 2:
+            mean_variance = fallback_weights
+            risk_parity = fallback_weights
+            min_variance = fallback_weights
+        else:
+            annualized_mean = forward_segment.mean() * 252
+            annualized_covariance = forward_segment.cov() * 252
+            try:
+                mean_variance = optimize_portfolio(
+                    annualized_mean,
+                    annualized_covariance,
+                    OptimizationConfig(
+                        objective="mean_variance",
+                        risk_aversion=0.35,
+                        long_only=True,
+                        min_weight=0.0,
+                        max_weight=1.0,
+                        turnover_penalty=0.0,
+                    ),
+                    asset_class_map=asset_class_map,
+                ).weights
+                risk_parity = optimize_portfolio(
+                    annualized_mean,
+                    annualized_covariance,
+                    OptimizationConfig(
+                        objective="risk_parity",
+                        long_only=True,
+                        min_weight=0.0,
+                        max_weight=1.0,
+                        turnover_penalty=0.0,
+                    ),
+                    asset_class_map=asset_class_map,
+                ).weights
+                min_variance = optimize_portfolio(
+                    annualized_mean,
+                    annualized_covariance,
+                    OptimizationConfig(
+                        objective="min_variance",
+                        long_only=True,
+                        min_weight=0.0,
+                        max_weight=1.0,
+                        turnover_penalty=0.0,
+                    ),
+                    asset_class_map=asset_class_map,
+                ).weights
+            except Exception:
+                mean_variance = fallback_weights
+                risk_parity = fallback_weights
+                min_variance = fallback_weights
 
         histories["best_asset"].append(best_asset_weights)
         histories["best_asset_anchor"].append(best_asset_weights)

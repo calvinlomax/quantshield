@@ -106,31 +106,65 @@ def _mean_variance_baseline_reward(
         segment_array = np.asarray(forward_segment, dtype=np.float32)
         segment_frame = pd.DataFrame(segment_array, columns=list(lookback_window.columns))
 
-    risk_estimate = estimate_risk(
-        lookback_window,
-        EstimationRiskConfig(
-            mean_estimator="historical",
-            covariance_estimator="ledoit_wolf",
-            annualize=True,
-        ),
-        periods_per_year=periods_per_year,
-    )
-    optimization_result = optimize_portfolio(
-        risk_estimate.mean,
-        risk_estimate.covariance,
-        OptimizationConfig(
-            objective="mean_variance",
-            risk_aversion=float(risk_aversion),
-            long_only=True,
-            min_weight=0.0,
-            max_weight=float(max_weight),
-            turnover_penalty=0.0,
-        ),
-    )
-    markowitz_action = _normalize_simplex(
-        optimization_result.weights.reindex(segment_frame.columns).fillna(0.0).to_numpy(dtype=np.float32)
-    )
+    clean_window = lookback_window.dropna(how="any")
+    if len(clean_window) < 2:
+        equal_weight_action = np.full(len(segment_frame.columns), 1.0 / max(len(segment_frame.columns), 1), dtype=np.float32)
+        return _segment_cumulative_return(segment_frame.to_numpy(dtype=np.float32), equal_weight_action)
+
+    try:
+        risk_estimate = estimate_risk(
+            clean_window,
+            EstimationRiskConfig(
+                mean_estimator="historical",
+                covariance_estimator="ledoit_wolf",
+                annualize=True,
+            ),
+            periods_per_year=periods_per_year,
+        )
+        optimization_result = optimize_portfolio(
+            risk_estimate.mean,
+            risk_estimate.covariance,
+            OptimizationConfig(
+                objective="mean_variance",
+                risk_aversion=float(risk_aversion),
+                long_only=True,
+                min_weight=0.0,
+                max_weight=float(max_weight),
+                turnover_penalty=0.0,
+            ),
+        )
+        markowitz_action = _normalize_simplex(
+            optimization_result.weights.reindex(segment_frame.columns).fillna(0.0).to_numpy(dtype=np.float32)
+        )
+    except Exception:
+        markowitz_action = np.full(len(segment_frame.columns), 1.0 / max(len(segment_frame.columns), 1), dtype=np.float32)
     return _segment_cumulative_return(segment_frame.to_numpy(dtype=np.float32), markowitz_action)
+
+
+def _valid_attention_head_count(hidden_dim: int, requested_heads: int) -> int:
+    """Return a transformer-valid attention-head count for the given hidden dimension."""
+    target_hidden = max(int(hidden_dim), 1)
+    target_heads = max(int(requested_heads), 1)
+    if target_hidden % target_heads == 0:
+        return target_heads
+    divisors = [candidate for candidate in range(1, target_hidden + 1) if target_hidden % candidate == 0]
+    if not divisors:
+        return 1
+    preferred_divisors = [candidate for candidate in divisors if candidate in {1, 2, 4, 6, 8, 10, 12, 14, 16}]
+    pool = preferred_divisors or divisors
+    return min(pool, key=lambda candidate: (abs(candidate - target_heads), 0 if candidate <= target_heads else 1, candidate))
+
+
+def normalize_training_config(config: RLTrainingConfig) -> RLTrainingConfig:
+    """Normalize transformer settings so hidden_dim and attention_heads are always compatible."""
+    normalized = RLTrainingConfig(**asdict(config))
+    normalized.hidden_dim = max(int(normalized.hidden_dim), 1)
+    normalized.attention_heads = _valid_attention_head_count(normalized.hidden_dim, int(normalized.attention_heads))
+    normalized.attention_layers = max(int(normalized.attention_layers), 1)
+    normalized.lookback_window = max(int(normalized.lookback_window), 1)
+    normalized.batch_size = max(int(normalized.batch_size), 1)
+    normalized.epochs = max(int(normalized.epochs), 1)
+    return normalized
 
 
 def _compose_training_reward(
@@ -145,7 +179,37 @@ def _compose_training_reward(
     reward_weight_vs_equal_weight: float = 0.30,
     reward_weight_vs_restricted_random: float = 0.20,
     reward_weight_vs_markowitz: float = 0.0,
+    reward_comparison_mode: str = "separate",
 ) -> float:
+    if reward_comparison_mode == "best_of_selected":
+        comparison_weight = (
+            float(reward_weight_vs_benchmark)
+            + float(reward_weight_vs_equal_weight)
+            + float(reward_weight_vs_markowitz)
+        )
+        best_selected_reward = max(float(benchmark_reward), float(equal_weight_reward), float(markowitz_reward))
+        weights = np.asarray(
+            [
+                float(reward_weight_raw),
+                float(comparison_weight),
+                float(reward_weight_vs_restricted_random),
+            ],
+            dtype=np.float64,
+        )
+        total_weight = float(np.abs(weights).sum())
+        if total_weight <= 1e-12:
+            return float(raw_reward)
+        weights /= total_weight
+        reward_components = np.asarray(
+            [
+                float(raw_reward),
+                float(raw_reward - best_selected_reward),
+                float(raw_reward - restricted_random_reward),
+            ],
+            dtype=np.float64,
+        )
+        return float(weights @ reward_components)
+
     weights = np.asarray(
         [
             float(reward_weight_raw),
@@ -227,6 +291,7 @@ class OfflinePortfolioDataset:
     reward_weight_vs_equal_weight: float = 0.30
     reward_weight_vs_restricted_random: float = 0.20
     reward_weight_vs_markowitz: float = 0.0
+    reward_comparison_mode: str = "separate"
 
     def subset(self, indices: Sequence[int]) -> "OfflinePortfolioDataset":
         subset_indices = list(indices)
@@ -249,6 +314,7 @@ class OfflinePortfolioDataset:
             reward_weight_vs_equal_weight=self.reward_weight_vs_equal_weight,
             reward_weight_vs_restricted_random=self.reward_weight_vs_restricted_random,
             reward_weight_vs_markowitz=self.reward_weight_vs_markowitz,
+            reward_comparison_mode=self.reward_comparison_mode,
         )
 
 
@@ -310,6 +376,7 @@ def build_offline_rl_dataset(
     reward_weight_vs_equal_weight: float = 0.30,
     reward_weight_vs_restricted_random: float = 0.20,
     reward_weight_vs_markowitz: float = 0.0,
+    reward_comparison_mode: str = "separate",
     markowitz_risk_aversion: float = 3.0,
     markowitz_max_weight: float = 0.35,
 ) -> OfflinePortfolioDataset:
@@ -398,6 +465,7 @@ def build_offline_rl_dataset(
                 reward_weight_vs_equal_weight=reward_weight_vs_equal_weight,
                 reward_weight_vs_restricted_random=reward_weight_vs_restricted_random,
                 reward_weight_vs_markowitz=reward_weight_vs_markowitz,
+                reward_comparison_mode=reward_comparison_mode,
             )
 
             states.append(_state_features(window))
@@ -453,6 +521,7 @@ def build_offline_rl_dataset(
         reward_weight_vs_equal_weight=reward_weight_vs_equal_weight,
         reward_weight_vs_restricted_random=reward_weight_vs_restricted_random,
         reward_weight_vs_markowitz=reward_weight_vs_markowitz,
+        reward_comparison_mode=reward_comparison_mode,
     )
 
 
@@ -617,6 +686,7 @@ def _compose_reward_vector(
     reward_weight_vs_equal_weight: float = 0.30,
     reward_weight_vs_restricted_random: float = 0.20,
     reward_weight_vs_markowitz: float = 0.0,
+    reward_comparison_mode: str = "separate",
 ) -> np.ndarray:
     rewards = [
         _compose_training_reward(
@@ -630,6 +700,7 @@ def _compose_reward_vector(
             reward_weight_vs_equal_weight=reward_weight_vs_equal_weight,
             reward_weight_vs_restricted_random=reward_weight_vs_restricted_random,
             reward_weight_vs_markowitz=reward_weight_vs_markowitz,
+            reward_comparison_mode=reward_comparison_mode,
         )
         for raw_return, benchmark_reward, equal_weight_reward, restricted_random_reward, markowitz_reward in zip(
             policy_raw_returns,
@@ -663,8 +734,8 @@ def _predict_policy_actions(
 def _training_config_from_dict(raw_config: dict[str, object] | None) -> RLTrainingConfig:
     """Hydrate a training config from a serialized checkpoint payload."""
     if not raw_config:
-        return RLTrainingConfig()
-    return RLTrainingConfig(**raw_config)
+        return normalize_training_config(RLTrainingConfig())
+    return normalize_training_config(RLTrainingConfig(**raw_config))
 
 
 def load_actor_critic_checkpoint(
@@ -895,6 +966,7 @@ def train_transformer_actor_critic(
     snapshot_callback: Callable[[int, nn.Module, pd.DataFrame], None] | None = None,
 ) -> RLTrainingResult:
     """Train a transformer actor-critic policy from offline demonstrations."""
+    config = normalize_training_config(config)
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
 
@@ -1053,6 +1125,7 @@ def train_transformer_actor_critic(
                         reward_weight_vs_equal_weight=dataset.reward_weight_vs_equal_weight,
                         reward_weight_vs_restricted_random=dataset.reward_weight_vs_restricted_random,
                         reward_weight_vs_markowitz=dataset.reward_weight_vs_markowitz,
+                        reward_comparison_mode=dataset.reward_comparison_mode,
                     ).mean()
                 ),
                 "validation_demo_training_reward": float(validation_dataset.rewards.mean()),
@@ -1076,6 +1149,7 @@ def train_transformer_actor_critic(
                         reward_weight_vs_equal_weight=dataset.reward_weight_vs_equal_weight,
                         reward_weight_vs_restricted_random=dataset.reward_weight_vs_restricted_random,
                         reward_weight_vs_markowitz=dataset.reward_weight_vs_markowitz,
+                        reward_comparison_mode=dataset.reward_comparison_mode,
                     ).mean()
                 ),
                 "validation_policy_excess_vs_markowitz": float(validation_policy_excess_vs_markowitz.mean()),
@@ -1137,6 +1211,7 @@ def train_transformer_actor_critic(
         reward_weight_vs_equal_weight=dataset.reward_weight_vs_equal_weight,
         reward_weight_vs_restricted_random=dataset.reward_weight_vs_restricted_random,
         reward_weight_vs_markowitz=dataset.reward_weight_vs_markowitz,
+        reward_comparison_mode=dataset.reward_comparison_mode,
     )
     validation_policy_raw, validation_policy_excess = _evaluate_policy_returns(
         validation_policy_actions,
@@ -1159,6 +1234,7 @@ def train_transformer_actor_critic(
         reward_weight_vs_equal_weight=dataset.reward_weight_vs_equal_weight,
         reward_weight_vs_restricted_random=dataset.reward_weight_vs_restricted_random,
         reward_weight_vs_markowitz=dataset.reward_weight_vs_markowitz,
+        reward_comparison_mode=dataset.reward_comparison_mode,
     )
     full_policy_raw, full_policy_excess = _evaluate_policy_returns(
         full_policy_actions,
@@ -1179,6 +1255,7 @@ def train_transformer_actor_critic(
         reward_weight_vs_equal_weight=dataset.reward_weight_vs_equal_weight,
         reward_weight_vs_restricted_random=dataset.reward_weight_vs_restricted_random,
         reward_weight_vs_markowitz=dataset.reward_weight_vs_markowitz,
+        reward_comparison_mode=dataset.reward_comparison_mode,
     )
     benchmark_summary = _build_benchmark_summary(
         train_policy_raw=train_policy_raw,

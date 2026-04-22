@@ -12,11 +12,12 @@ import numpy as np
 import pandas as pd
 import torch
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))
+try:
+    from scripts._common import bootstrap_project_root
+except ImportError:  # pragma: no cover - direct script execution
+    from _common import bootstrap_project_root
+
+ROOT = bootstrap_project_root(__file__)
 
 from quantshield.config import load_config
 from quantshield.data_loader import MarketDataLoader

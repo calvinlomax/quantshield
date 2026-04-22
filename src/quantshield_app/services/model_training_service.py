@@ -12,7 +12,9 @@ import shlex
 import shutil
 import sys
 
+import psutil
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
+import torch
 
 from quantshield.replay_durations import DEFAULT_REPLAY_DURATION_KEY, get_replay_duration_profile
 from quantshield.training_logging import EVENT_PREFIX
@@ -73,6 +75,7 @@ class ResolvedTrainingLaunch:
     benchmark_label: str
     tickers: list[str]
     resolved_hyperparameters: dict[str, object]
+    compute_plan: dict[str, object]
 
 
 class ModelTrainingService(QObject):
@@ -103,6 +106,10 @@ class ModelTrainingService(QObject):
         self._kill_timer.setSingleShot(True)
         self._kill_timer.setInterval(4000)
         self._kill_timer.timeout.connect(self._kill_process)
+        self._utilization_timer = QTimer(self)
+        self._utilization_timer.setInterval(1000)
+        self._utilization_timer.timeout.connect(self._sample_utilization)
+        self._utilization_sample_index = 0
 
     @property
     def state(self) -> str:
@@ -120,6 +127,7 @@ class ModelTrainingService(QObject):
         defaults.setdefault("optimizer", "adamw")
         defaults.setdefault("checkpoint_frequency", 0)
         defaults.setdefault("early_stopping_patience", 0)
+        defaults["reward_comparison_mode"] = "best_of_selected"
         return defaults
 
     def output_categories_for_mode(self, mode: str) -> tuple[str, ...]:
@@ -153,6 +161,12 @@ class ModelTrainingService(QObject):
         tickers = [ticker.strip().upper() for ticker in request.tickers if ticker.strip()]
         defaults = self.default_hyperparameters(mode=request.training_mode, duration_key=request.duration_key)
         resolved_hyperparameters = {**defaults, **request.hyperparameters}
+        compute_plan = self._evaluate_compute_capability(request, resolved_hyperparameters)
+        resolved_hyperparameters = self._apply_compute_plan(
+            request=request,
+            resolved_hyperparameters=resolved_hyperparameters,
+            compute_plan=compute_plan,
+        )
         benchmark_value, benchmark_label = self._resolve_benchmark(request, tickers)
         output_dir = self._build_output_dir(request)
         script_path = self._script_path_for_mode(request.training_mode)
@@ -175,6 +189,7 @@ class ModelTrainingService(QObject):
             benchmark_label=benchmark_label,
             tickers=tickers,
             resolved_hyperparameters=resolved_hyperparameters,
+            compute_plan=compute_plan,
         )
 
     def validate_request(self, request: ModelTrainingRequest) -> list[str]:
@@ -295,6 +310,8 @@ class ModelTrainingService(QObject):
         ModelTrainingService._active_service = self
         self._set_state("validating")
         self.run_started.emit(launch)
+        self.log_received.emit(self._compute_plan_text(launch.compute_plan), "stdout")
+        self.event_received.emit({"event": "compute_plan", "compute_plan": launch.compute_plan})
 
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONPATH", (self.root / "src").as_posix())
@@ -302,6 +319,9 @@ class ModelTrainingService(QObject):
         self._process.setProcessEnvironment(environment)
         self._process.setWorkingDirectory(self.root.as_posix())
         self._set_state("running")
+        psutil.cpu_percent(interval=None)
+        self._utilization_sample_index = 0
+        self._utilization_timer.start()
         self._process.start(launch.python_executable, [launch.script_path.as_posix(), *launch.arguments])
         return launch
 
@@ -343,6 +363,7 @@ class ModelTrainingService(QObject):
 
     def _on_finished(self, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
         self._kill_timer.stop()
+        self._utilization_timer.stop()
         success = exit_code == 0 and not self._cancel_requested
         state = "done" if success else ("cancelled" if self._cancel_requested else "failed")
         self._set_state(state)
@@ -354,6 +375,21 @@ class ModelTrainingService(QObject):
         }
         ModelTrainingService._active_service = None
         self.run_finished.emit(result)
+
+    def _sample_utilization(self) -> None:
+        if not self.is_running:
+            return
+        memory = psutil.virtual_memory()
+        event = {
+            "event": "utilization_sample",
+            "sample_index": self._utilization_sample_index,
+            "cpu_percent": float(psutil.cpu_percent(interval=None)),
+            "memory_percent": float(memory.percent),
+            "memory_used_gb": float(memory.used / (1024**3)),
+            "memory_available_gb": float(memory.available / (1024**3)),
+        }
+        self._utilization_sample_index += 1
+        self.event_received.emit(event)
 
     @staticmethod
     def parse_event_line(line: str) -> dict[str, object] | None:
@@ -466,13 +502,15 @@ class ModelTrainingService(QObject):
             str(resolved_hyperparameters["reward_weight_vs_restricted_random"]),
             "--reward-weight-vs-markowitz",
             str(resolved_hyperparameters["reward_weight_vs_markowitz"]),
+            "--reward-comparison-mode",
+            str(resolved_hyperparameters.get("reward_comparison_mode", "best_of_selected")),
         ]
         if request.end_date:
             common.extend(["--end-date", request.end_date])
         if request.tags:
             common.extend(["--tags", *request.tags])
         device_value = str(resolved_hyperparameters.get("device", "auto")).strip().lower()
-        if device_value and device_value != "auto":
+        if device_value:
             common.extend(["--device", device_value])
 
         if request.training_mode == "portfolio_fit":
@@ -513,6 +551,104 @@ class ModelTrainingService(QObject):
         if request.benchmark_mode == "markowitz":
             return "__markowitz__", f"Markowitz Mean-Variance ({', '.join(tickers)})"
         return request.benchmark_ticker.strip().upper(), request.benchmark_ticker.strip().upper()
+
+    @staticmethod
+    def _determine_best_device() -> str:
+        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+        return "cpu"
+
+    def _evaluate_compute_capability(
+        self,
+        request: ModelTrainingRequest,
+        resolved_hyperparameters: dict[str, object],
+    ) -> dict[str, object]:
+        memory = psutil.virtual_memory()
+        total_ram_gb = float(memory.total / (1024**3))
+        available_ram_gb = float(memory.available / (1024**3))
+        logical_cores = int(psutil.cpu_count(logical=True) or 1)
+        physical_cores = int(psutil.cpu_count(logical=False) or logical_cores)
+        requested_device = str(resolved_hyperparameters.get("device", "auto")).strip().lower()
+        resolved_device = self._determine_best_device() if requested_device == "auto" else requested_device
+
+        if int(request.model_size) >= 50:
+            recommended_batch_size = 16 if available_ram_gb < 8.0 else (32 if available_ram_gb < 16.0 else 64)
+        else:
+            recommended_batch_size = 32 if available_ram_gb < 8.0 else (64 if available_ram_gb < 16.0 else 96)
+        if resolved_device == "cpu":
+            recommended_batch_size = min(recommended_batch_size, 64 if int(request.model_size) <= 10 else 32)
+
+        recommended_candidate_pool = None
+        recommended_random_universes = None
+        if request.training_mode == "experiment":
+            if available_ram_gb < 8.0:
+                recommended_candidate_pool = 24
+                recommended_random_universes = 96
+            elif available_ram_gb < 16.0:
+                recommended_candidate_pool = 48
+                recommended_random_universes = 160
+            else:
+                recommended_candidate_pool = 80 if resolved_device != "cpu" else 64
+                recommended_random_universes = 320 if resolved_device != "cpu" else 224
+
+        notes: list[str] = []
+        if requested_device == "auto":
+            notes.append(f"auto-selected device={resolved_device}")
+        if int(resolved_hyperparameters.get("batch_size", recommended_batch_size)) > recommended_batch_size:
+            notes.append(f"batch capped to {recommended_batch_size} for local memory")
+        if recommended_candidate_pool is not None and int(resolved_hyperparameters.get("candidate_pool_size", recommended_candidate_pool)) > recommended_candidate_pool:
+            notes.append(f"candidate pool capped to {recommended_candidate_pool}")
+        if recommended_random_universes is not None and int(resolved_hyperparameters.get("random_universes", recommended_random_universes)) > recommended_random_universes:
+            notes.append(f"random universes capped to {recommended_random_universes}")
+
+        return {
+            "physical_cores": physical_cores,
+            "logical_cores": logical_cores,
+            "total_ram_gb": round(total_ram_gb, 2),
+            "available_ram_gb": round(available_ram_gb, 2),
+            "resolved_device": resolved_device,
+            "recommended_batch_size": int(recommended_batch_size),
+            "recommended_candidate_pool_size": recommended_candidate_pool,
+            "recommended_random_universes": recommended_random_universes,
+            "notes": notes,
+        }
+
+    def _apply_compute_plan(
+        self,
+        *,
+        request: ModelTrainingRequest,
+        resolved_hyperparameters: dict[str, object],
+        compute_plan: dict[str, object],
+    ) -> dict[str, object]:
+        adjusted = dict(resolved_hyperparameters)
+        adjusted["device"] = str(compute_plan["resolved_device"])
+        adjusted["batch_size"] = min(
+            int(adjusted.get("batch_size", compute_plan["recommended_batch_size"])),
+            int(compute_plan["recommended_batch_size"]),
+        )
+        if request.training_mode == "experiment":
+            candidate_cap = compute_plan.get("recommended_candidate_pool_size")
+            if candidate_cap is not None:
+                adjusted["candidate_pool_size"] = min(int(adjusted.get("candidate_pool_size", candidate_cap)), int(candidate_cap))
+            random_cap = compute_plan.get("recommended_random_universes")
+            if random_cap is not None:
+                adjusted["random_universes"] = min(int(adjusted.get("random_universes", random_cap)), int(random_cap))
+        return adjusted
+
+    @staticmethod
+    def _compute_plan_text(compute_plan: dict[str, object]) -> str:
+        notes = compute_plan.get("notes") or []
+        notes_text = f" | {', '.join(str(item) for item in notes)}" if notes else ""
+        return (
+            "Compute plan: "
+            f"{compute_plan['physical_cores']} physical / {compute_plan['logical_cores']} logical cores, "
+            f"{compute_plan['available_ram_gb']:.2f} GB free of {compute_plan['total_ram_gb']:.2f} GB, "
+            f"device={compute_plan['resolved_device']}, "
+            f"batch={compute_plan['recommended_batch_size']}"
+            f"{notes_text}"
+        )
 
     def _script_path_for_mode(self, mode: str) -> Path:
         filename = {

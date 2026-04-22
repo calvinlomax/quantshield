@@ -58,6 +58,7 @@ class RandomSP500TrainingSpec:
     reward_weight_vs_equal_weight: float = 0.30
     reward_weight_vs_restricted_random: float = 0.20
     reward_weight_vs_markowitz: float = 0.0
+    reward_comparison_mode: str = "separate"
     markowitz_risk_aversion: float = 3.0
     markowitz_max_weight: float = 0.35
 
@@ -384,6 +385,7 @@ def combine_offline_datasets(datasets: list[OfflinePortfolioDataset]) -> Offline
         reward_weight_vs_equal_weight=datasets[0].reward_weight_vs_equal_weight,
         reward_weight_vs_restricted_random=datasets[0].reward_weight_vs_restricted_random,
         reward_weight_vs_markowitz=datasets[0].reward_weight_vs_markowitz,
+        reward_comparison_mode=datasets[0].reward_comparison_mode,
     )
 
 
@@ -619,6 +621,7 @@ def build_random_sp500_dataset(
             reward_weight_vs_equal_weight=spec.reward_weight_vs_equal_weight,
             reward_weight_vs_restricted_random=spec.reward_weight_vs_restricted_random,
             reward_weight_vs_markowitz=spec.reward_weight_vs_markowitz,
+            reward_comparison_mode=spec.reward_comparison_mode,
         )
         selected_objective = max(mixture_weights, key=mixture_weights.get)
 
@@ -691,6 +694,7 @@ def build_random_sp500_dataset(
         reward_weight_vs_equal_weight=spec.reward_weight_vs_equal_weight,
         reward_weight_vs_restricted_random=spec.reward_weight_vs_restricted_random,
         reward_weight_vs_markowitz=spec.reward_weight_vs_markowitz,
+        reward_comparison_mode=spec.reward_comparison_mode,
     )
     summary = {
         "candidate_pool": candidate_pool,

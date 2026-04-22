@@ -10,9 +10,12 @@ import sys
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))
+try:
+    from scripts._common import bootstrap_project_root
+except ImportError:  # pragma: no cover - direct script execution
+    from _common import bootstrap_project_root
+
+ROOT = bootstrap_project_root(__file__)
 
 from quantshield.config import load_config
 from quantshield.data_loader import MarketDataLoader
@@ -25,6 +28,7 @@ from quantshield.rl import (
     _segment_cumulative_return,
     build_offline_rl_dataset,
     load_actor_critic_checkpoint,
+    normalize_training_config,
     save_actor_critic_artifacts,
     train_transformer_actor_critic,
 )
@@ -121,6 +125,12 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Reward weight for excess return versus the Markowitz baseline.",
     )
+    parser.add_argument(
+        "--reward-comparison-mode",
+        choices=["separate", "best_of_selected"],
+        default="separate",
+        help="How benchmark/equal-weight/Markowitz comparison weights are combined in the reward.",
+    )
     parser.add_argument("--output-dir", required=True, help="Directory where fit artifacts will be written.")
     parser.add_argument("--device", help="Optional torch device override.")
     parser.add_argument("--tickers", nargs="+", required=True, help="Chosen portfolio tickers.")
@@ -152,6 +162,7 @@ def default_cli_options() -> dict[str, object]:
         "reward_weight_vs_equal_weight": 0.30,
         "reward_weight_vs_restricted_random": 0.20,
         "reward_weight_vs_markowitz": 0.0,
+        "reward_comparison_mode": "separate",
     }
 
 
@@ -180,6 +191,24 @@ def _resolved_benchmark_label(args: argparse.Namespace, tickers: list[str]) -> s
     if args.benchmark_mode == "markowitz":
         return f"Markowitz Mean-Variance ({', '.join(tickers)})"
     return args.benchmark.strip().upper()
+
+
+def _resolved_training_data_tickers(
+    tickers: list[str],
+    *,
+    benchmark_mode: str,
+    benchmark_value: str,
+) -> list[str]:
+    """Return the full price-panel universe needed for portfolio-fit training.
+
+    The action space remains the chosen portfolio basket. This helper only adds
+    extra reference series, such as an external ticker benchmark, to the return
+    panel used for reward calculation.
+    """
+    data_tickers = list(tickers)
+    if benchmark_mode == "ticker" and benchmark_value and benchmark_value not in data_tickers:
+        data_tickers.append(benchmark_value)
+    return data_tickers
 
 
 def _build_candidate_specs(
@@ -473,10 +502,19 @@ def _build_candidate_specs(
         ),
     ]
     if candidate_mode == "standard":
-        return candidates[:3]
-    if candidate_mode == "experimental":
-        return candidates[2:7]
-    return candidates
+        selected = candidates[:3]
+    elif candidate_mode == "experimental":
+        selected = candidates[2:7]
+    else:
+        selected = candidates
+    return [
+        CandidateSpecification(
+            name=candidate.name,
+            training_config=normalize_training_config(candidate.training_config),
+            objective_names=candidate.objective_names,
+        )
+        for candidate in selected
+    ]
 
 
 def _evaluate_checkpoint_vs_baseline_tickers(
@@ -580,9 +618,14 @@ def main() -> None:
     asset_class_map = infer_asset_class_map(tickers)
     benchmark_value = _resolved_benchmark_value(args)
     benchmark_label = _resolved_benchmark_label(args, tickers)
+    data_tickers = _resolved_training_data_tickers(
+        tickers,
+        benchmark_mode=args.benchmark_mode,
+        benchmark_value=benchmark_value,
+    )
 
     app_config = load_config(args.config)
-    app_config.data.tickers = list(tickers)
+    app_config.data.tickers = list(data_tickers)
     app_config.data.asset_class_map = asset_class_map
     app_config.data.start_date = args.start_date
     app_config.data.end_date = args.end_date
@@ -591,7 +634,7 @@ def main() -> None:
     loader = MarketDataLoader(cache_dir=app_config.data.cache_dir)
     prices = clean_price_data(
         loader.fetch_prices(
-            tickers,
+            data_tickers,
             args.start_date,
             args.end_date,
             use_cache=app_config.data.use_cache,
@@ -623,6 +666,7 @@ def main() -> None:
         "benchmark_mode": args.benchmark_mode,
         "benchmark_value": benchmark_value,
         "benchmark_label": benchmark_label,
+        "training_data_tickers": data_tickers,
         "rebalance_frequency": args.rebalance_frequency,
         "lookback_window": lookback_window,
         "candidate_mode": args.candidate_mode,
@@ -649,6 +693,7 @@ def main() -> None:
             "reward_weight_vs_equal_weight": float(args.reward_weight_vs_equal_weight),
             "reward_weight_vs_restricted_random": float(args.reward_weight_vs_restricted_random),
             "reward_weight_vs_markowitz": float(args.reward_weight_vs_markowitz),
+            "reward_comparison_mode": str(args.reward_comparison_mode),
         },
     }
     write_model_metadata(output_dir, initial_metadata)
@@ -667,6 +712,8 @@ def main() -> None:
         flush=True,
     )
     print(f"Resolved benchmark: {benchmark_label}", flush=True)
+    if data_tickers != tickers:
+        print(f"Resolved training data universe: {', '.join(data_tickers)}", flush=True)
     candidate_specs = _build_candidate_specs(
         candidate_mode=args.candidate_mode,
         lookback_window=lookback_window,
@@ -718,6 +765,7 @@ def main() -> None:
             reward_weight_vs_equal_weight=args.reward_weight_vs_equal_weight,
             reward_weight_vs_restricted_random=args.reward_weight_vs_restricted_random,
             reward_weight_vs_markowitz=args.reward_weight_vs_markowitz,
+            reward_comparison_mode=args.reward_comparison_mode,
         )
         training_dataset = _downsample_dataset(dataset, max_samples=max_training_samples)
         candidate_name = candidate_spec.name
@@ -773,6 +821,7 @@ def main() -> None:
         validation_row = aggregate_frame.loc[aggregate_frame["split"] == "validation"].iloc[0]
         all_row = aggregate_frame.loc[aggregate_frame["split"] == "all"].iloc[0]
         score_row = result.model_score_summary.loc["all"]
+        selected_history = result.history.loc[result.selected_epoch] if result.selected_epoch in result.history.index else result.history.iloc[-1]
         sweep_row = {
             "candidate": candidate_name,
             "selected_epoch": result.selected_epoch,
@@ -790,6 +839,8 @@ def main() -> None:
             "all_beats_all_tickers": bool(all_row["beats_all_tickers"]),
             "all_significant_vs_all_tickers": bool(all_row["significant_vs_all_tickers"]),
             "all_min_mean_excess_return": float(all_row["min_mean_excess_return"]),
+            "selected_train_total_loss": float(selected_history["train_total_loss"]),
+            "selected_validation_policy_excess_return": float(selected_history["validation_policy_excess_return"]),
             "candidate_dir": candidate_dir.as_posix(),
         }
         sweep_rows.append(sweep_row)
@@ -862,6 +913,7 @@ def main() -> None:
         "rebalance_frequency": args.rebalance_frequency,
         "lookback_window": lookback_window,
         "candidate_mode": args.candidate_mode,
+        "reward_comparison_mode": str(args.reward_comparison_mode),
         "selected_candidate": best_name,
         "selected_epoch": best_result.selected_epoch,
         "model_path": artifact_paths["model"].as_posix(),

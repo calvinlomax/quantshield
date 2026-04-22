@@ -28,6 +28,7 @@ from quantshield_app.services.checkpoint_service import DEFAULT_CHECKPOINT_ROOTS
 from quantshield_app.services.replay_service import PolicyReplayResult, ReplayFrame, ReplayService
 from quantshield_app.services.treasury_rate_service import TreasuryRateAssumption, TreasuryRateService
 from quantshield_app.viewmodels import ReplayController
+from scripts.fit_portfolio_model import _resolved_training_data_tickers
 
 torch = pytest.importorskip("torch")
 
@@ -111,6 +112,24 @@ def test_generate_schedule_accepts_legacy_month_alias() -> None:
 
     assert legacy.equals(normalized)
     assert len(legacy) > 0
+
+
+def test_fit_portfolio_model_resolves_external_benchmark_into_training_data_universe() -> None:
+    resolved = _resolved_training_data_tickers(
+        ["ACGL", "MAR", "MSCI", "NXPI", "PTC", "RCL", "TDY", "WAT", "WEC", "XOM"],
+        benchmark_mode="ticker",
+        benchmark_value="SPY",
+    )
+
+    assert resolved[:-1] == ["ACGL", "MAR", "MSCI", "NXPI", "PTC", "RCL", "TDY", "WAT", "WEC", "XOM"]
+    assert resolved[-1] == "SPY"
+
+    unchanged = _resolved_training_data_tickers(
+        ["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        benchmark_mode="ticker",
+        benchmark_value="SPY",
+    )
+    assert unchanged == ["SPY", "QQQ", "GLD", "IVV", "VOO"]
 
 
 def test_treasury_rate_service_matches_nearest_maturity_offline() -> None:
@@ -1009,19 +1028,21 @@ def test_checkpoint_selection_dialog_tracks_visible_tab_selection() -> None:
 def test_checkpoint_selection_dialog_opens_new_model_popup(monkeypatch) -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    qtcore = pytest.importorskip("PySide6.QtCore")
     from quantshield_app.services.checkpoint_service import CheckpointDescriptor
     from quantshield_app.ui.checkpoint_dialog import CheckpointSelectionDialog
 
     app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
     captured: dict[str, object] = {}
 
-    class FakeNewModelDialog:
+    class FakeNewModelDialog(qtwidgets.QDialog):
         def __init__(self, **kwargs: object) -> None:
+            super().__init__(kwargs.get("parent"))
             captured.update(kwargs)
 
-        def exec(self) -> int:
-            captured["executed"] = True
-            return 0
+        def show(self) -> None:
+            captured["shown"] = True
+            super().show()
 
     monkeypatch.setattr("quantshield_app.ui.checkpoint_dialog.NewModelDialog", FakeNewModelDialog)
 
@@ -1043,14 +1064,110 @@ def test_checkpoint_selection_dialog_opens_new_model_popup(monkeypatch) -> None:
         current_start_date="2024-01-02",
         current_end_date="2024-12-31",
     )
+    dialog.setWindowModality(qtcore.Qt.WindowModality.ApplicationModal)
+    dialog.show()
+    app.processEvents()
 
     dialog.new_model_button.click()
+    app.processEvents()
 
     assert captured["current_portfolio_tickers"] == ["AAPL", "MSFT", "NVDA", "AMZN", "META"]
     assert captured["current_benchmark_ticker"] == "SPY"
     assert captured["current_duration_key"] == "1y"
     assert captured["current_max_portfolio_size"] == 10
-    assert captured["executed"] is True
+    assert captured["shown"] is True
+    assert dialog.isHidden() is True
+    assert dialog.windowModality() == qtcore.Qt.WindowModality.NonModal
+    assert dialog._new_model_dialog is not None
+    assert dialog.model_table.horizontalHeaderItem(0).text() == "Updated"
+
+    dialog._new_model_dialog.reject()
+    app.processEvents()
+
+    assert dialog.isVisible() is True
+    assert dialog.windowModality() == qtcore.Qt.WindowModality.ApplicationModal
+    assert dialog._new_model_dialog is None
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_checkpoint_selection_dialog_compare_button_is_always_clickable(monkeypatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.services.checkpoint_service import CheckpointDescriptor
+    from quantshield_app.ui.checkpoint_dialog import CheckpointSelectionDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    captured: dict[str, object] = {}
+
+    descriptors = [
+        CheckpointDescriptor(
+            path=Path("outputs/replay_checkpoint_suites/1y/base.pt"),
+            tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+            lookback_window=63,
+            hidden_dim=224,
+            attention_heads=8,
+            attention_layers=4,
+            duration_key="1y",
+            candidate_name="balanced_192x6x4",
+        ),
+        CheckpointDescriptor(
+            path=Path("outputs/replay_checkpoint_suites/3mo/base.pt"),
+            tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+            lookback_window=21,
+            hidden_dim=192,
+            attention_heads=6,
+            attention_layers=4,
+            duration_key="3mo",
+            candidate_name="balanced_192x6x4",
+        ),
+        CheckpointDescriptor(
+            path=Path("outputs/replay_checkpoint_suites/5y/base.pt"),
+            tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+            lookback_window=252,
+            hidden_dim=256,
+            attention_heads=8,
+            attention_layers=5,
+            duration_key="5y",
+            candidate_name="deeper_224x8x5",
+        ),
+    ]
+
+    class FakeComparePickerDialog:
+        def __init__(self, **kwargs: object) -> None:
+            captured["picker_descriptors"] = kwargs["descriptors"]
+            self.selected_descriptors = descriptors[:3]
+
+        def exec(self) -> int:
+            captured["picker_executed"] = True
+            return 1
+
+    class FakeModelComparisonDialog:
+        def __init__(self, **kwargs: object) -> None:
+            captured["compared"] = kwargs["descriptors"]
+
+        def exec(self) -> int:
+            captured["comparison_executed"] = True
+            return 0
+
+    monkeypatch.setattr("quantshield_app.ui.checkpoint_dialog.CompareModelPickerDialog", FakeComparePickerDialog)
+    monkeypatch.setattr("quantshield_app.ui.checkpoint_dialog.ModelComparisonDialog", FakeModelComparisonDialog)
+
+    dialog = CheckpointSelectionDialog(
+        descriptors=descriptors,
+        active_duration_key="1y",
+    )
+    dialog.model_table.clearSelection()
+    app.processEvents()
+
+    assert dialog.compare_button.isEnabled() is True
+
+    dialog.compare_button.click()
+
+    assert captured["picker_executed"] is True
+    assert len(captured["picker_descriptors"]) == 3
+    assert len(captured["compared"]) == 3
+    assert captured["comparison_executed"] is True
     dialog.deleteLater()
     app.processEvents()
 
@@ -1130,8 +1247,32 @@ def test_model_training_service_validates_and_builds_script_command() -> None:
     assert launch.benchmark_value == "__markowitz__"
     assert "--tickers" in launch.arguments
     assert "--benchmark-mode" in launch.arguments
+    assert "--reward-comparison-mode" in launch.arguments
+    assert "best_of_selected" in launch.arguments
     assert launch.resolved_hyperparameters["candidate_mode"] == "experimental"
+    assert launch.resolved_hyperparameters["reward_comparison_mode"] == "best_of_selected"
+    assert launch.resolved_hyperparameters["device"] == launch.compute_plan["resolved_device"]
+    assert launch.compute_plan["resolved_device"] in {"cpu", "mps", "cuda"}
     assert "fit_portfolio_model.py" in launch.command_text
+
+    rl_request = ModelTrainingRequest(
+        name="pytest_new_rl_training",
+        model_size=10,
+        training_mode="rl_policy",
+        tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        start_date="2024-01-02",
+        end_date="2024-12-31",
+        duration_key="3y",
+        benchmark_mode="ticker",
+        benchmark_ticker="SPY",
+        output_category="rl_policy",
+        hyperparameters={"objectives": ["min_variance", "mean_variance"]},
+    )
+    rl_launch = service.resolve_request(rl_request)
+
+    assert rl_launch.script_path.name == "train_rl_policy.py"
+    assert "--duration-key" in rl_launch.arguments
+    assert "3y" in rl_launch.arguments
 
 
 def test_model_training_service_saves_completed_model(tmp_path) -> None:
@@ -1188,6 +1329,7 @@ def test_new_model_dialog_stages_preview_and_save_flow(monkeypatch) -> None:
     summary, output_path, resolved_values, command = dialog._preview_payload()
     assert "fit_portfolio_model.py" in command
     assert "lookback_window" in resolved_values
+    assert "reward_comparison_mode: best_of_selected" in resolved_values
     assert "Universe:" in summary
     assert "Output Path:" in output_path
     assert dialog.post_run_group.isVisible() is False
@@ -1236,6 +1378,7 @@ def test_new_model_dialog_stages_preview_and_save_flow(monkeypatch) -> None:
     dialog._run_complete = True
     dialog._set_post_run_state()
     assert dialog.post_run_group.isVisible() is True
+    assert dialog.completed_returns_canvas.axes.get_title() == "Returns"
     dialog._show_metadata_tab()
     assert dialog.metadata_tabs.isVisible() is True
 
@@ -1266,7 +1409,127 @@ def test_new_model_dialog_stages_preview_and_save_flow(monkeypatch) -> None:
     app.processEvents()
 
 
-def test_training_monitor_dialog_locks_loss_axis_and_shows_candidate_progress() -> None:
+def test_new_model_dialog_defers_failure_warning_until_visible(monkeypatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.ui.new_model_dialog import NewModelDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    warnings_seen: list[str] = []
+    monkeypatch.setattr("quantshield_app.ui.new_model_dialog.QMessageBox.warning", lambda *_args: warnings_seen.append("warning"))
+
+    dialog = NewModelDialog(
+        current_portfolio_tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        current_benchmark_ticker="SPY",
+        current_duration_key="1y",
+        current_start_date="2024-01-02",
+        current_end_date="2024-12-31",
+        current_max_portfolio_size=10,
+    )
+    class DummyMonitor:
+        def set_running(self, *_args, **_kwargs) -> None:
+            return None
+
+    dialog._monitor_dialog = DummyMonitor()  # type: ignore[assignment]
+    dialog._on_run_finished({"success": False, "cancelled": False, "exit_code": 2})
+
+    assert warnings_seen == []
+    assert dialog._last_run_message == "Training failed with exit code 2."
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_new_model_dialog_resets_dates_when_duration_changes() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.ui.new_model_dialog import NewModelDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    dialog = NewModelDialog(
+        current_portfolio_tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        current_benchmark_ticker="SPY",
+        current_duration_key="1y",
+        current_start_date="2020-01-02",
+        current_end_date="2020-12-31",
+        current_max_portfolio_size=10,
+    )
+
+    target_index = dialog.duration_combo.findData("3y")
+    dialog.duration_combo.setCurrentIndex(target_index)
+    app.processEvents()
+
+    expected_end = pd.Timestamp.today().normalize()
+    expected_start = duration_start_from_end(expected_end, "3y")
+
+    assert dialog.end_date_edit.date().toString("yyyy-MM-dd") == expected_end.strftime("%Y-%m-%d")
+    assert dialog.start_date_edit.date().toString("yyyy-MM-dd") == expected_start.strftime("%Y-%m-%d")
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_new_model_dialog_shows_non_modal_monitor_during_training(monkeypatch, tmp_path) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.services.model_training_service import ResolvedTrainingLaunch
+    from quantshield_app.ui.new_model_dialog import NewModelDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    dialog = NewModelDialog(
+        current_portfolio_tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        current_benchmark_ticker="SPY",
+        current_duration_key="1y",
+        current_start_date="2024-01-02",
+        current_end_date="2024-12-31",
+        current_max_portfolio_size=10,
+    )
+    dialog.show()
+    app.processEvents()
+
+    fake_launch = ResolvedTrainingLaunch(
+        script_path=Path("scripts/fit_portfolio_model.py"),
+        python_executable=sys.executable,
+        arguments=["--name", "pytest"],
+        command_text=f"{sys.executable} scripts/fit_portfolio_model.py --name pytest",
+        output_dir=tmp_path / "run",
+        benchmark_value="SPY",
+        benchmark_label="SPY",
+        tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        resolved_hyperparameters={"candidate_mode": "experimental"},
+        compute_plan={
+            "physical_cores": 4,
+            "logical_cores": 8,
+            "available_ram_gb": 8.0,
+            "total_ram_gb": 16.0,
+            "resolved_device": "cpu",
+            "recommended_batch_size": 32,
+            "notes": [],
+        },
+    )
+    monkeypatch.setattr(dialog._training_service, "start_training", lambda request: fake_launch)
+
+    dialog._start_training()
+    app.processEvents()
+
+    assert dialog.isHidden() is True
+    assert dialog.windowModality() == qtcore.Qt.WindowModality.NonModal
+    assert dialog._monitor_dialog is not None
+    assert dialog._monitor_dialog.windowModality() == qtcore.Qt.WindowModality.NonModal
+    assert dialog._monitor_dialog.isVisible() is True
+
+    dialog._on_monitor_closed(0)
+    app.processEvents()
+
+    assert dialog.isVisible() is True
+    assert dialog.windowModality() == qtcore.Qt.WindowModality.NonModal
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_training_monitor_dialog_updates_epoch_label_and_uses_dynamic_loss_axis() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     from quantshield_app.ui.new_model_dialog import TrainingMonitorDialog
@@ -1283,6 +1546,8 @@ def test_training_monitor_dialog_locks_loss_axis_and_shows_candidate_progress() 
     assert "3 separate candidate models" in status_text
     assert "1/3" in status_text
     assert "portfolio_regularized_256x8x5" in status_text
+    dialog.set_epoch_progress(7, 56)
+    assert dialog.epoch_label.text() == "Epoch 7/56"
 
     first_history = pd.DataFrame(
         {
@@ -1296,9 +1561,9 @@ def test_training_monitor_dialog_locks_loss_axis_and_shows_candidate_progress() 
     second_history = pd.DataFrame(
         {
             "epoch": [1, 2],
-            "train_total_loss": [0.85, 0.30],
-            "train_actor_loss": [0.55, 0.10],
-            "train_critic_loss": [0.25, 0.15],
+            "train_total_loss": [0.85, 1.40],
+            "train_actor_loss": [0.55, 1.10],
+            "train_critic_loss": [0.25, 0.95],
             "train_bc_loss": [0.05, 0.05],
         }
     )
@@ -1308,7 +1573,20 @@ def test_training_monitor_dialog_locks_loss_axis_and_shows_candidate_progress() 
     dialog.update_history(second_history)
     second_ylim = dialog.loss_canvas.axes.get_ylim()
 
-    assert second_ylim == pytest.approx(first_ylim)
+    assert second_ylim != pytest.approx(first_ylim)
+
+    dialog.set_compute_plan("Compute plan: test")
+    assert dialog.compute_plan_label.text() == "Compute plan: test"
+    dialog.update_utilization(
+        {
+            "sample_index": 0,
+            "cpu_percent": 31.5,
+            "memory_percent": 42.0,
+            "memory_used_gb": 3.2,
+            "memory_available_gb": 4.8,
+        }
+    )
+    assert len(dialog._utilization_rows) == 1
 
     dialog.deleteLater()
     app.processEvents()

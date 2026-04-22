@@ -44,8 +44,8 @@ The desktop app is the main user-facing product. It lets you:
   - configurable universe source
   - configurable benchmark target
   - editable basic and advanced hyperparameters
-  - a dedicated monitor window with live CLI output
-  - a dedicated monitor window with live training charts
+  - a dedicated non-modal monitor window with live CLI output
+  - a dedicated non-modal monitor window with live training charts while the rest of the app remains interactive
   - optional 3D candidate-sweep visualization when real sweep data exists
   - an explicit save step before the model is registered back into the selector
 
@@ -152,6 +152,8 @@ Saved user configurations are written to:
 
 - `outputs/app_state/portfolios.json`
 
+The built-in presets are curated against the repo's locally available cached market data so the desktop workflows do not surface known dead symbols unnecessarily.
+
 ## Installation
 
 Python `3.11+` is required.
@@ -237,7 +239,8 @@ It supports:
 
 - browsing built-in, experimental, RL, and portfolio-fit checkpoints
 - switching between 10-name and 50-name model families
-- comparing up to two saved models side by side
+- sorting the model list by relative `Updated` age and other visible metadata columns
+- comparing any 2 to 5 saved models side by side
 - opening `New Model` to launch a training run without leaving the selector
 
 ### New Model Workflow
@@ -256,15 +259,17 @@ Instead, the dialog:
   - training universe
   - basic hyperparameters
   - dates / horizon / benchmark
+- automatically resets the training window to `today - duration` when the selected duration changes
 - moves advanced hyperparameters and launch preview into an `Advanced` popup
 - launches one of the existing training scripts asynchronously
-- hides the launcher during execution and opens a dedicated monitor window with:
+- hides the launcher during execution and opens a dedicated non-modal monitor window with:
   - loss graph
   - reward / objective graph
   - benchmark-relative graph
   - live CLI output
   - progress bar
   - optional gradient-descent / candidate-surface view
+- allows the rest of the desktop app to remain interactive while the monitor is open
 - returns to the launcher after training completes, where the user can:
   - review the completed run
   - reopen the full graph window
@@ -534,14 +539,16 @@ QuantShield/
 Run the full test suite:
 
 ```bash
-python -m pytest
+MPLCONFIGDIR=/tmp/mpl PYTHONPATH=src .venv/bin/python -m pytest tests -q
 ```
 
 Or run the desktop-focused tests:
 
 ```bash
-python -m pytest tests/test_desktop_app.py
+MPLCONFIGDIR=/tmp/mpl PYTHONPATH=src .venv/bin/python -m pytest tests/test_desktop_app.py -q
 ```
+
+For a theory-first treatment of the optimization, replay, reinforcement-learning, and software-engineering design, see [Methodology.md](Methodology.md).
 
 ## Notes
 

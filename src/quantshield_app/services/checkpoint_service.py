@@ -57,6 +57,29 @@ CANDIDATE_DISPLAY_LABELS = {
 }
 
 
+def _relative_age_label(updated_at: datetime, *, now: datetime | None = None) -> str:
+    """Return a human-readable relative age label for UI tables."""
+    reference = now or datetime.now()
+    delta_days = max((reference.date() - updated_at.date()).days, 0)
+    if delta_days == 0:
+        return "Today"
+    if delta_days == 1:
+        return "1 Day Ago"
+    if delta_days < 7:
+        return f"{delta_days} Days Ago"
+    if delta_days < 30:
+        weeks = max(delta_days // 7, 1)
+        unit = "Week" if weeks == 1 else "Weeks"
+        return f"{weeks} {unit} Ago"
+    if delta_days < 365:
+        months = max(delta_days // 30, 1)
+        unit = "Month" if months == 1 else "Months"
+        return f"{months} {unit} Ago"
+    years = max(delta_days // 365, 1)
+    unit = "Year" if years == 1 else "Years"
+    return f"{years} {unit} Ago"
+
+
 def is_placeholder_ticker(ticker: str) -> bool:
     """Return True when a ticker is a synthetic asset-slot label."""
     return bool(PLACEHOLDER_TICKER_PATTERN.fullmatch(ticker.strip().upper()))
@@ -175,7 +198,11 @@ class CheckpointDescriptor:
 
     @property
     def updated_label(self) -> str:
-        return self.updated_at.strftime("%Y-%m-%d")
+        return _relative_age_label(self.updated_at)
+
+    @property
+    def updated_sort_value(self) -> float:
+        return self.updated_at.timestamp()
 
     @property
     def data_window_label(self) -> str:

@@ -68,7 +68,7 @@ PRESET_CONFIGURATION_DEFINITIONS_10: tuple[tuple[str, list[str], str], ...] = (
     ),
     (
         "AI & Semiconductors",
-        ["NVDA", "AVGO", "AMD", "QCOM", "MU", "AMAT", "LRCX", "KLAC", "ADI", "MRVL"],
+        ["NVDA", "AVGO", "AMD", "QCOM", "MU", "AMAT", "LRCX", "KLAC", "ADI", "TXN"],
         "Semiconductor designers, foundry equipment, and AI infrastructure.",
     ),
 )

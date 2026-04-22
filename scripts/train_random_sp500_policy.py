@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import sys
 
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))
+try:
+    from scripts._common import bootstrap_project_root
+except ImportError:  # pragma: no cover - direct script execution
+    from _common import bootstrap_project_root
+
+ROOT = bootstrap_project_root(__file__)
 
 from quantshield.config import load_config
 from quantshield.replay_durations import REPLAY_DURATION_PROFILES, checkpoint_root_for_duration, get_replay_duration_profile
@@ -113,6 +115,12 @@ def parse_args() -> argparse.Namespace:
         default=0.55,
         help="Reward weight for excess return versus the long-only mean-variance baseline.",
     )
+    parser.add_argument(
+        "--reward-comparison-mode",
+        choices=["separate", "best_of_selected"],
+        default="separate",
+        help="How benchmark/equal-weight/Markowitz comparison weights are combined in the reward.",
+    )
     return parser.parse_args()
 
 
@@ -143,6 +151,7 @@ def default_cli_options() -> dict[str, object]:
         "reward_weight_vs_equal_weight": 0.10,
         "reward_weight_vs_restricted_random": 0.10,
         "reward_weight_vs_markowitz": 0.55,
+        "reward_comparison_mode": "separate",
     }
 
 
@@ -454,6 +463,7 @@ def main() -> None:
             "reward_weight_vs_equal_weight": float(args.reward_weight_vs_equal_weight),
             "reward_weight_vs_restricted_random": float(args.reward_weight_vs_restricted_random),
             "reward_weight_vs_markowitz": float(args.reward_weight_vs_markowitz),
+            "reward_comparison_mode": str(args.reward_comparison_mode),
         },
     }
     write_model_metadata(output_dir, initial_metadata)
@@ -503,6 +513,7 @@ def main() -> None:
             reward_weight_vs_equal_weight=args.reward_weight_vs_equal_weight,
             reward_weight_vs_restricted_random=args.reward_weight_vs_restricted_random,
             reward_weight_vs_markowitz=args.reward_weight_vs_markowitz,
+            reward_comparison_mode=str(args.reward_comparison_mode),
         ),
     )
     print(
@@ -554,6 +565,7 @@ def main() -> None:
         all_split = result.benchmark_summary.loc["all"]
         validation_score = result.model_score_summary.loc["validation"]
         all_score = result.model_score_summary.loc["all"]
+        selected_history = result.history.loc[result.selected_epoch] if result.selected_epoch in result.history.index else result.history.iloc[-1]
         sweep_rows.append(
             {
                 "candidate": candidate_name,
@@ -584,6 +596,8 @@ def main() -> None:
                 "all_mean_excess_vs_markowitz": float(all_split["policy_mean_excess_vs_markowitz"]),
                 "all_t_statistic": float(all_split["t_statistic"]),
                 "all_mean_abs_weight_error": float(result.evaluation_summary.loc["all", "mean_abs_weight_error"]),
+                "selected_train_total_loss": float(selected_history["train_total_loss"]),
+                "selected_validation_policy_excess_return": float(selected_history["validation_policy_excess_return"]),
                 "candidate_dir": str(candidate_dir),
             }
         )

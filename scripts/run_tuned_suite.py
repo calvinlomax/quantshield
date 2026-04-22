@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-import sys
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))
+try:
+    from scripts._common import bootstrap_project_root
+except ImportError:  # pragma: no cover - direct script execution
+    from _common import bootstrap_project_root
+
+bootstrap_project_root(__file__)
 
 from quantshield.config import load_config
 from quantshield.tuned_suite import run_tuned_objective_suite

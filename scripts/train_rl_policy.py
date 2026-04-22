@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import sys
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))
+try:
+    from scripts._common import bootstrap_project_root
+except ImportError:  # pragma: no cover - direct script execution
+    from _common import bootstrap_project_root
+
+ROOT = bootstrap_project_root(__file__)
 
 from quantshield.config import load_config
 from quantshield.data_loader import MarketDataLoader
@@ -56,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default="outputs/rl_policy", help="Directory where RL artifacts will be written.")
     parser.add_argument("--tickers", nargs="+", help="Optional explicit ticker universe.")
+    parser.add_argument("--duration-key", default="1y", help="Training horizon key used for metadata and UI grouping.")
     parser.add_argument("--start-date", default="2018-01-01", help="Historical sample start date.")
     parser.add_argument("--end-date", help="Historical sample end date.")
     parser.add_argument("--rebalance-frequency", default="ME", help="Forward holding-period frequency.")
@@ -111,6 +114,12 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Reward weight for excess return versus Markowitz.",
     )
+    parser.add_argument(
+        "--reward-comparison-mode",
+        choices=["separate", "best_of_selected"],
+        default="separate",
+        help="How benchmark/equal-weight/Markowitz comparison weights are combined in the reward.",
+    )
     return parser.parse_args()
 
 
@@ -139,6 +148,7 @@ def default_cli_options() -> dict[str, object]:
         "reward_weight_vs_equal_weight": 0.30,
         "reward_weight_vs_restricted_random": 0.20,
         "reward_weight_vs_markowitz": 0.0,
+        "reward_comparison_mode": "separate",
     }
 
 
@@ -184,6 +194,7 @@ def main() -> None:
         "tags": list(args.tags),
         "training_mode": "rl_policy",
         "model_size": int(args.model_size),
+        "duration_key": str(args.duration_key),
         "tickers": tickers,
         "benchmark_mode": benchmark_value,
         "benchmark_label": benchmark_label,
@@ -212,6 +223,7 @@ def main() -> None:
             "reward_weight_vs_equal_weight": float(args.reward_weight_vs_equal_weight),
             "reward_weight_vs_restricted_random": float(args.reward_weight_vs_restricted_random),
             "reward_weight_vs_markowitz": float(args.reward_weight_vs_markowitz),
+            "reward_comparison_mode": str(args.reward_comparison_mode),
         },
     }
     write_model_metadata(output_dir, initial_metadata)
@@ -220,6 +232,7 @@ def main() -> None:
         "run_initialized",
         mode="rl_policy",
         name=run_name,
+        duration_key=str(args.duration_key),
         output_dir=output_dir,
         tickers=tickers,
         benchmark_mode=benchmark_value,
@@ -265,6 +278,7 @@ def main() -> None:
             reward_weight_vs_equal_weight=float(args.reward_weight_vs_equal_weight),
             reward_weight_vs_restricted_random=float(args.reward_weight_vs_restricted_random),
             reward_weight_vs_markowitz=float(args.reward_weight_vs_markowitz),
+            reward_comparison_mode=str(args.reward_comparison_mode),
         )
     else:
         _, returns = prepare_market_data(app_config)
@@ -279,6 +293,7 @@ def main() -> None:
             reward_weight_vs_equal_weight=float(args.reward_weight_vs_equal_weight),
             reward_weight_vs_restricted_random=float(args.reward_weight_vs_restricted_random),
             reward_weight_vs_markowitz=float(args.reward_weight_vs_markowitz),
+            reward_comparison_mode=str(args.reward_comparison_mode),
         )
 
     training_config = RLTrainingConfig(
@@ -345,6 +360,7 @@ def main() -> None:
     print(f"Saved benchmark summary to {artifact_paths['benchmark_summary']}")
     print(f"Saved model score summary to {artifact_paths['model_score_summary']}")
     print(f"Saved RL figures to {Path(artifact_paths['training_diagnostics_fig']).parent}")
+    selected_history = result.history.loc[result.selected_epoch] if result.selected_epoch in result.history.index else result.history.iloc[-1]
     write_model_metadata(
         output_dir,
         {
@@ -360,6 +376,8 @@ def main() -> None:
         candidate_index=1,
         total_candidates=1,
         selected_epoch=result.selected_epoch,
+        selected_train_total_loss=float(selected_history["train_total_loss"]),
+        selected_validation_policy_excess_return=float(selected_history["validation_policy_excess_return"]),
         candidate_dir=output_dir,
     )
     emit_training_event(

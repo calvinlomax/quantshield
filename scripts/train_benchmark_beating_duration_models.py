@@ -10,9 +10,12 @@ import sys
 
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))
+try:
+    from scripts._common import bootstrap_project_root
+except ImportError:  # pragma: no cover - direct script execution
+    from _common import bootstrap_project_root
+
+ROOT = bootstrap_project_root(__file__)
 
 from quantshield.replay_durations import REPLAY_DURATION_PROFILES
 from quantshield.universe import CANONICAL_TOP_ETF_UNIVERSE

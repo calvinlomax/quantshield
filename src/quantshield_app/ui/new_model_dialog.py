@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from quantshield.config import load_config
-from quantshield.replay_durations import DEFAULT_REPLAY_DURATION_KEY, REPLAY_DURATION_PROFILES
+from quantshield.replay_durations import DEFAULT_REPLAY_DURATION_KEY, REPLAY_DURATION_PROFILES, duration_start_from_end
 from quantshield.universe import CANONICAL_TOP_50_UNIVERSE, CANONICAL_TOP_ETF_UNIVERSE
 from quantshield_app.services import (
     ModelTrainingRequest,
@@ -78,7 +78,6 @@ class LineMetricCanvas(FigureCanvasQTAgg):
         ylabel: str,
         empty_message: str,
         parent: QWidget | None = None,
-        lock_y_on_first_plot: bool = False,
     ) -> None:
         figure = Figure(figsize=(5.4, 3.2))
         super().__init__(figure)
@@ -89,13 +88,10 @@ class LineMetricCanvas(FigureCanvasQTAgg):
         self._title = title
         self._ylabel = ylabel
         self._empty_message = empty_message
-        self._lock_y_on_first_plot = lock_y_on_first_plot
-        self._locked_ylim: tuple[float, float] | None = None
         self.reset()
 
     def reset(self) -> None:
         self.axes.clear()
-        self._locked_ylim = None
         self.axes.text(0.5, 0.5, self._empty_message, ha="center", va="center")
         self.axes.set_xticks([])
         self.axes.set_yticks([])
@@ -121,31 +117,12 @@ class LineMetricCanvas(FigureCanvasQTAgg):
             self.axes.legend(loc="best", fontsize=7)
             if zero_line:
                 self.axes.axhline(0.0, color="black", linewidth=0.8, alpha=0.45)
-            if self._lock_y_on_first_plot:
-                if self._locked_ylim is None:
-                    plotted_values = []
-                    for column in columns:
-                        if column not in history.columns:
-                            continue
-                        series = pd.to_numeric(history[column], errors="coerce").dropna()
-                        if not series.empty:
-                            plotted_values.extend(series.tolist())
-                    if plotted_values:
-                        lower = min(plotted_values)
-                        upper = max(plotted_values)
-                        span = max(upper - lower, 0.25)
-                        padding = max(span * 0.18, max(abs(lower), abs(upper), 1.0) * 0.10, 0.15)
-                        locked_lower = min(0.0, lower - padding)
-                        locked_upper = max(upper + padding, 1.5)
-                        self._locked_ylim = (locked_lower, locked_upper)
-                if self._locked_ylim is not None:
-                    self.axes.set_ylim(*self._locked_ylim)
         self.axes.set_title(self._title, fontsize=9)
         self.draw_idle()
 
 
 class Training3DCanvas(FigureCanvasQTAgg):
-    """Optional 3D visualization for real candidate sweeps."""
+    """3D visualization for real candidate sweeps and epoch-by-epoch loss descent."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         figure = Figure(figsize=(5.2, 4.2))
@@ -164,30 +141,101 @@ class Training3DCanvas(FigureCanvasQTAgg):
         self.axes.set_zticks([])
         self.draw_idle()
 
-    def update_points(self, rows: list[dict[str, object]]) -> None:
+    def update_points(
+        self,
+        rows: list[dict[str, object]],
+        *,
+        candidate_histories: dict[str, pd.DataFrame] | None = None,
+        active_candidate: str | None = None,
+    ) -> None:
         if not rows:
             self.reset()
             return
         frame = pd.DataFrame(rows)
-        required = {"hidden_dim", "attention_layers", "all_composite_score"}
+        z_column = "selected_train_total_loss" if "selected_train_total_loss" in frame.columns else None
+        required = {"hidden_dim", "attention_layers"}
         if not required.issubset(frame.columns):
             self.reset("3D view unavailable for this run")
             return
+        if z_column is None:
+            self.reset("Loss surface unavailable for this run")
+            return
+        frame = frame.dropna(subset=["hidden_dim", "attention_layers", z_column]).copy()
+        if frame.empty:
+            self.reset("Loss surface unavailable for this run")
+            return
         self.axes.clear()
-        colors = frame["validation_composite_score"] if "validation_composite_score" in frame.columns else frame["all_composite_score"]
+        x_values = frame["hidden_dim"].astype(float)
+        y_values = frame["attention_layers"].astype(float)
+        z_values = frame[z_column].astype(float)
+        if len(frame) >= 3:
+            try:
+                self.axes.plot_trisurf(
+                    x_values,
+                    y_values,
+                    z_values,
+                    cmap="viridis",
+                    alpha=0.35,
+                    linewidth=0.2,
+                    antialiased=True,
+                )
+            except Exception:
+                pass
         scatter = self.axes.scatter(
-            frame["hidden_dim"].astype(float),
-            frame["attention_layers"].astype(float),
-            frame["all_composite_score"].astype(float),
-            c=colors.astype(float),
-            cmap="viridis",
-            s=50,
+            x_values,
+            y_values,
+            z_values,
+            c=z_values,
+            cmap="viridis_r",
+            s=60,
             depthshade=True,
+            edgecolors="black",
+            linewidths=0.3,
         )
-        self.axes.set_title("Reduced Candidate Sweep", fontsize=9)
+        active_history = None
+        if candidate_histories and active_candidate:
+            active_history = candidate_histories.get(active_candidate)
+        active_rows = frame.loc[frame["candidate"].astype(str) == str(active_candidate)] if active_candidate and "candidate" in frame.columns else pd.DataFrame()
+        if active_history is not None and not active_history.empty and not active_rows.empty and "train_total_loss" in active_history.columns:
+            anchor = active_rows.iloc[0]
+            xs = pd.Series(float(anchor["hidden_dim"]), index=active_history.index)
+            ys = pd.Series(float(anchor["attention_layers"]), index=active_history.index)
+            active_z = active_history.sort_values("epoch")["train_total_loss"].astype(float).reset_index(drop=True)
+            self.axes.plot(xs.to_numpy(), ys.to_numpy(), active_z.to_numpy(), color="#ff8c00", linewidth=2.0, label="Loss path")
+            if len(active_z) > 1:
+                step_delta = active_z.diff().fillna(0.0).iloc[1:]
+                self.axes.quiver(
+                    xs.to_numpy()[:-1],
+                    ys.to_numpy()[:-1],
+                    active_z.to_numpy()[:-1],
+                    [0.0] * (len(active_z) - 1),
+                    [0.0] * (len(active_z) - 1),
+                    step_delta.to_numpy(),
+                    color="#ff6b35",
+                    linewidth=1.2,
+                    arrow_length_ratio=0.16,
+                )
+            self.axes.scatter(
+                [float(anchor["hidden_dim"])],
+                [float(anchor["attention_layers"])],
+                [float(active_z.iloc[-1])],
+                color="#111111",
+                s=70,
+                label="Active candidate",
+            )
+            self.axes.legend(loc="best", fontsize=7)
+        self.axes.set_title("Candidate Loss Surface", fontsize=9)
         self.axes.set_xlabel("Hidden Dim")
         self.axes.set_ylabel("Layers")
-        self.axes.set_zlabel("Composite")
+        self.axes.set_zlabel("Loss")
+        self.axes.text2D(
+            0.02,
+            0.98,
+            "Surface = real candidate sweep samples. Line/arrows = epoch-by-epoch loss descent for the active candidate.",
+            transform=self.axes.transAxes,
+            fontsize=7,
+            va="top",
+        )
         self.figure.colorbar(scatter, ax=self.axes, shrink=0.72, pad=0.08)
         self.draw_idle()
 
@@ -195,16 +243,30 @@ class Training3DCanvas(FigureCanvasQTAgg):
 class GradientViewDialog(QDialog):
     """Standalone dialog for the optional 3D optimization surface."""
 
-    def __init__(self, *, candidate_rows: list[dict[str, object]], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        candidate_rows: list[dict[str, object]],
+        candidate_histories: dict[str, pd.DataFrame] | None = None,
+        active_candidate: str | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Gradient Descent / Candidate Surface")
         self.resize(760, 560)
         layout = QVBoxLayout(self)
-        intro = QLabel("This view only appears when the training scripts emitted real sweep coordinates.", self)
+        intro = QLabel(
+            "This view uses real candidate sweep samples for the surface and overlays the active candidate's real epoch-by-epoch loss descent.",
+            self,
+        )
         intro.setWordWrap(True)
         layout.addWidget(intro)
         self.surface_canvas = Training3DCanvas(self)
-        self.surface_canvas.update_points(candidate_rows)
+        self.surface_canvas.update_points(
+            candidate_rows,
+            candidate_histories=candidate_histories,
+            active_candidate=active_candidate,
+        )
         layout.addWidget(self.surface_canvas, stretch=1)
         button_row = QHBoxLayout()
         button_row.addStretch(1)
@@ -212,6 +274,39 @@ class GradientViewDialog(QDialog):
         close_button.clicked.connect(self.accept)
         button_row.addWidget(close_button)
         layout.addLayout(button_row)
+
+
+class UtilizationDialog(QDialog):
+    """Read-only resource utilization view for the active local training process."""
+
+    def __init__(self, *, history: list[dict[str, object]], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Device Utilization")
+        self.resize(900, 620)
+        layout = QVBoxLayout(self)
+        intro = QLabel("CPU and RAM utilization for the local machine while the training process was active.", self)
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        grid = QGridLayout()
+        self.cpu_canvas = LineMetricCanvas(title="CPU Usage", ylabel="Percent", empty_message="No CPU samples available", parent=self)
+        self.memory_canvas = LineMetricCanvas(title="RAM Usage", ylabel="Percent", empty_message="No RAM samples available", parent=self)
+        grid.addWidget(self.cpu_canvas, 0, 0)
+        grid.addWidget(self.memory_canvas, 0, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid, stretch=1)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close_button = QPushButton("Close", self)
+        close_button.clicked.connect(self.accept)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+        if history:
+            frame = pd.DataFrame(history)
+            frame["epoch"] = frame["sample_index"].astype(int)
+            self.cpu_canvas.plot_columns(frame, ["cpu_percent"])
+            self.memory_canvas.plot_columns(frame, ["memory_percent"])
 
 
 class TrainingMonitorDialog(QDialog):
@@ -223,19 +318,27 @@ class TrainingMonitorDialog(QDialog):
         self.resize(1260, 860)
         self._running = True
         self._candidate_rows: list[dict[str, object]] = []
+        self._candidate_histories: dict[str, pd.DataFrame] = {}
+        self._utilization_rows: list[dict[str, object]] = []
         self._candidate_total = 0
         self._completed_candidates = 0
+        self._current_epoch = 0
+        self._current_epoch_total = 0
 
         layout = QVBoxLayout(self)
         header_row = QHBoxLayout()
         self.state_label = QLabel("State: running", self)
+        self.compute_plan_label = QLabel("Compute plan pending", self)
         self.view_gradient_button = QPushButton("View Gradient Descent", self)
+        self.view_utilization_button = QPushButton("View Utilization", self)
         self.cancel_button = QPushButton("Cancel", self)
         self.close_button = QPushButton("Close", self)
         self.close_button.setEnabled(False)
         header_row.addWidget(self.state_label)
+        header_row.addWidget(self.compute_plan_label)
         header_row.addStretch(1)
         header_row.addWidget(self.view_gradient_button)
+        header_row.addWidget(self.view_utilization_button)
         header_row.addWidget(self.cancel_button)
         header_row.addWidget(self.close_button)
         layout.addLayout(header_row)
@@ -250,7 +353,6 @@ class TrainingMonitorDialog(QDialog):
             ylabel="Loss",
             empty_message="Loss metrics will appear here",
             parent=self,
-            lock_y_on_first_plot=True,
         )
         self.reward_canvas = LineMetricCanvas(
             title="Reward / Objective",
@@ -276,11 +378,16 @@ class TrainingMonitorDialog(QDialog):
         grid.setRowStretch(1, 1)
         layout.addLayout(grid, stretch=1)
 
+        progress_row = QHBoxLayout()
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setRange(0, 0)
-        layout.addWidget(self.progress_bar)
+        self.epoch_label = QLabel("Epoch —/—", self)
+        progress_row.addWidget(self.progress_bar, stretch=1)
+        progress_row.addWidget(self.epoch_label)
+        layout.addLayout(progress_row)
 
         self.view_gradient_button.clicked.connect(self._open_gradient_view)
+        self.view_utilization_button.clicked.connect(self._open_utilization_view)
 
     def set_running(self, running: bool, *, state_label: str | None = None) -> None:
         self._running = running
@@ -338,12 +445,23 @@ class TrainingMonitorDialog(QDialog):
     def append_log(self, line: str) -> None:
         self.cli_view.appendPlainText(line)
 
+    def set_epoch_progress(self, current_epoch: int, total_epochs: int) -> None:
+        self._current_epoch = max(int(current_epoch), 0)
+        self._current_epoch_total = max(int(total_epochs), 0)
+        if self._current_epoch_total > 0:
+            self.epoch_label.setText(f"Epoch {self._current_epoch}/{self._current_epoch_total}")
+        else:
+            self.epoch_label.setText("Epoch —/—")
+
     def reset_metric_views(self) -> None:
         self.loss_canvas.reset()
         self.reward_canvas.reset()
         self.relative_canvas.reset()
 
     def update_history(self, history: pd.DataFrame) -> None:
+        candidate = str(history.get("candidate", pd.Series(dtype=str)).iloc[-1]) if ("candidate" in history.columns and not history.empty) else None
+        if candidate:
+            self._candidate_histories[candidate] = history.copy()
         self.loss_canvas.plot_columns(
             history,
             ["train_total_loss", "train_actor_loss", "train_critic_loss", "train_bc_loss", "validation_loss"],
@@ -365,8 +483,26 @@ class TrainingMonitorDialog(QDialog):
             zero_line=True,
         )
 
+    def update_utilization(self, sample: dict[str, object]) -> None:
+        self._utilization_rows.append(dict(sample))
+
+    def set_compute_plan(self, plan_text: str) -> None:
+        self.compute_plan_label.setText(plan_text)
+
     def _open_gradient_view(self) -> None:
-        dialog = GradientViewDialog(candidate_rows=self._candidate_rows, parent=self)
+        active_candidate = None
+        if self._candidate_histories:
+            active_candidate = next(reversed(self._candidate_histories))
+        dialog = GradientViewDialog(
+            candidate_rows=self._candidate_rows,
+            candidate_histories=self._candidate_histories,
+            active_candidate=active_candidate,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _open_utilization_view(self) -> None:
+        dialog = UtilizationDialog(history=self._utilization_rows, parent=self)
         dialog.exec()
 
     def reject(self) -> None:
@@ -378,7 +514,16 @@ class TrainingMonitorDialog(QDialog):
 class GraphResultsDialog(QDialog):
     """Read-only dialog showing the completed run's full graph set and CLI output."""
 
-    def __init__(self, *, history: pd.DataFrame, candidate_rows: list[dict[str, object]], cli_text: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        history: pd.DataFrame,
+        candidate_rows: list[dict[str, object]],
+        candidate_histories: dict[str, pd.DataFrame],
+        active_candidate: str | None,
+        cli_text: str,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Training Graphs")
         self.resize(1260, 860)
@@ -390,7 +535,6 @@ class GraphResultsDialog(QDialog):
             ylabel="Loss",
             empty_message="No loss metrics available",
             parent=self,
-            lock_y_on_first_plot=True,
         )
         self.reward_canvas = LineMetricCanvas(title="Reward / Objective", ylabel="Reward", empty_message="No reward metrics available", parent=self)
         self.relative_canvas = LineMetricCanvas(
@@ -442,7 +586,14 @@ class GraphResultsDialog(QDialog):
                 zero_line=True,
             )
 
-        view_gradient.clicked.connect(lambda: GradientViewDialog(candidate_rows=candidate_rows, parent=self).exec())
+        view_gradient.clicked.connect(
+            lambda: GradientViewDialog(
+                candidate_rows=candidate_rows,
+                candidate_histories=candidate_histories,
+                active_candidate=active_candidate,
+                parent=self,
+            ).exec()
+        )
         close_button.clicked.connect(self.accept)
 
 
@@ -661,7 +812,8 @@ class NewModelDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("New Model")
-        self.resize(1120, 760)
+        self.resize(1180, 900)
+        self.setWindowModality(Qt.WindowModality.NonModal)
 
         self._root = Path(__file__).resolve().parents[3]
         self._current_portfolio_tickers = [ticker.strip().upper() for ticker in current_portfolio_tickers if ticker.strip()]
@@ -672,6 +824,8 @@ class NewModelDialog(QDialog):
         self._current_request: ModelTrainingRequest | None = None
         self._metric_rows: dict[str, list[dict[str, object]]] = defaultdict(list)
         self._candidate_rows: list[dict[str, object]] = []
+        self._utilization_rows: list[dict[str, object]] = []
+        self._compute_plan_text = ""
         self._active_candidate = "training_run"
         self.completed_model_path: Path | None = None
         self._last_output_dir: Path | None = None
@@ -680,6 +834,7 @@ class NewModelDialog(QDialog):
         self._all_logs: list[str] = []
         self._run_complete = False
         self._save_completed = False
+        self._last_run_message: str | None = None
         self._advanced_values: dict[str, object] = {}
         self._monitor_dialog: TrainingMonitorDialog | None = None
         self._broad_config_tickers = load_config(self._root / "config" / "broad_universe_config.yaml").data.tickers
@@ -837,11 +992,15 @@ class NewModelDialog(QDialog):
             ylabel="Loss",
             empty_message="Loss graph will appear after training completes",
             parent=post_run_group,
-            lock_y_on_first_plot=True,
         )
-        self.completed_surface_canvas = Training3DCanvas(post_run_group)
+        self.completed_returns_canvas = LineMetricCanvas(
+            title="Returns",
+            ylabel="Return",
+            empty_message="Returns graph will appear after training completes",
+            parent=post_run_group,
+        )
         graph_row.addWidget(self.completed_loss_canvas, stretch=1)
-        graph_row.addWidget(self.completed_surface_canvas, stretch=1)
+        graph_row.addWidget(self.completed_returns_canvas, stretch=1)
         post_run_layout.addLayout(graph_row, stretch=1)
         self.post_run_group = post_run_group
         self.post_run_group.setVisible(False)
@@ -927,9 +1086,12 @@ class NewModelDialog(QDialog):
 
         self.training_mode_combo.currentIndexChanged.connect(self._reset_defaults_for_mode)
         self.duration_combo.currentIndexChanged.connect(self._reset_defaults_for_mode)
+        self.duration_combo.currentIndexChanged.connect(self._on_duration_changed)
         self.model_size_combo.currentIndexChanged.connect(self._on_model_size_changed)
         self.universe_source_combo.currentIndexChanged.connect(self._on_universe_source_changed)
         self.benchmark_mode_combo.currentIndexChanged.connect(self._on_benchmark_mode_changed)
+        self.start_date_edit.dateChanged.connect(self._update_preview_labels)
+        self.end_date_edit.dateChanged.connect(self._update_preview_labels)
 
         self._populate_presets()
         self._reset_defaults_for_mode()
@@ -982,6 +1144,7 @@ class NewModelDialog(QDialog):
             "reward_weight_vs_restricted_random": float(defaults["reward_weight_vs_restricted_random"]),
             "reward_weight_vs_markowitz": float(defaults["reward_weight_vs_markowitz"]),
             "reward_weight_raw": float(defaults["reward_weight_raw"]),
+            "reward_comparison_mode": str(defaults.get("reward_comparison_mode", "best_of_selected")),
         }
         self._sync_mode_visibility()
         self._populate_save_categories()
@@ -998,6 +1161,16 @@ class NewModelDialog(QDialog):
         self._pending_output_dir = None
         self._populate_presets()
         self._update_preview_labels()
+
+    def _on_duration_changed(self) -> None:
+        self._reset_dates_for_duration()
+
+    def _reset_dates_for_duration(self) -> None:
+        duration_key = str(self.duration_combo.currentData() or DEFAULT_REPLAY_DURATION_KEY)
+        end_timestamp = pd.Timestamp.today().normalize()
+        start_timestamp = duration_start_from_end(end_timestamp, duration_key)
+        self.start_date_edit.setDate(QDate(start_timestamp.year, start_timestamp.month, start_timestamp.day))
+        self.end_date_edit.setDate(QDate(end_timestamp.year, end_timestamp.month, end_timestamp.day))
 
     def _on_universe_source_changed(self) -> None:
         source = str(self.universe_source_combo.currentData() or "current_portfolio")
@@ -1154,7 +1327,7 @@ class NewModelDialog(QDialog):
             parent=self,
         )
         if dialog.exec():
-            self._advanced_values = dialog.values()
+            self._advanced_values.update(dialog.values())
         self._update_preview_labels()
 
     def _set_pre_run_state(self) -> None:
@@ -1178,11 +1351,21 @@ class NewModelDialog(QDialog):
         self.view_all_graphs_button.setVisible(True)
         self.view_model_summary_button.setVisible(True)
         self.start_button.setVisible(False)
+        history = self._completed_history_frame()
         self.completed_loss_canvas.plot_columns(
-            self._active_history_frame(),
+            history,
             ["train_total_loss", "train_actor_loss", "train_critic_loss", "train_bc_loss", "validation_loss"],
         )
-        self.completed_surface_canvas.update_points(self._candidate_rows)
+        self.completed_returns_canvas.plot_columns(
+            history,
+            [
+                "train_policy_excess_return",
+                "validation_policy_excess_return",
+                "validation_policy_excess_vs_equal_weight",
+                "validation_policy_excess_vs_markowitz",
+            ],
+            zero_line=True,
+        )
 
     def _start_training(self) -> None:
         request = self._build_request()
@@ -1197,30 +1380,35 @@ class NewModelDialog(QDialog):
         self._pending_output_dir = None
         self._metric_rows.clear()
         self._candidate_rows.clear()
+        self._utilization_rows.clear()
+        self._compute_plan_text = self._training_service._compute_plan_text(launch.compute_plan)
         self._active_candidate = "training_run"
         self._all_logs.clear()
         self.completed_model_path = None
+        self._last_run_message = None
         self.metadata_tabs.setVisible(False)
         self._populate_save_categories()
 
-        self._monitor_dialog = TrainingMonitorDialog(self)
+        self._monitor_dialog = TrainingMonitorDialog()
         self._monitor_dialog.cancel_button.clicked.connect(self._cancel_training)
         self._monitor_dialog.close_button.clicked.connect(self._monitor_dialog.accept)
+        self._monitor_dialog.finished.connect(self._on_monitor_closed)
         self._monitor_dialog.set_running(True, state_label="running")
+        self._monitor_dialog.set_compute_plan(self._compute_plan_text)
+        for line in self._all_logs:
+            self._monitor_dialog.append_log(line)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self._monitor_dialog.setWindowModality(Qt.WindowModality.NonModal)
         self.hide()
-        self._monitor_dialog.exec()
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        if self._run_complete:
-            self._set_post_run_state()
-        else:
-            self._set_pre_run_state()
+        self._monitor_dialog.show()
+        self._monitor_dialog.raise_()
+        self._monitor_dialog.activateWindow()
 
     def _cancel_training(self) -> None:
         if not self._training_service.is_running:
             return
-        confirm = QMessageBox.question(self, "Cancel Training", "Cancel the active training run?")
+        parent = self._monitor_dialog if self._monitor_dialog is not None else self
+        confirm = QMessageBox.question(parent, "Cancel Training", "Cancel the active training run?")
         if confirm != QMessageBox.StandardButton.Yes:
             return
         self._training_service.cancel()
@@ -1240,6 +1428,12 @@ class NewModelDialog(QDialog):
                     active_candidate="waiting to start",
                     completed_candidates=0,
                 )
+        elif event_type == "compute_plan":
+            compute_plan = event.get("compute_plan")
+            if isinstance(compute_plan, dict):
+                self._compute_plan_text = self._training_service._compute_plan_text(compute_plan)
+                if self._monitor_dialog is not None:
+                    self._monitor_dialog.set_compute_plan(self._compute_plan_text)
         elif event_type == "candidate_started":
             candidate = str(event.get("candidate") or "training_run")
             candidate_changed = candidate != self._active_candidate
@@ -1249,6 +1443,11 @@ class NewModelDialog(QDialog):
                     self._monitor_dialog.reset_metric_views()
                 total_candidates = int(event.get("total_candidates") or event.get("candidate_total") or 0)
                 candidate_index = int(event.get("candidate_index") or 0)
+                training_config = event.get("training_config")
+                total_epochs = 0
+                if isinstance(training_config, dict):
+                    total_epochs = int(training_config.get("epochs") or 0)
+                self._monitor_dialog.set_epoch_progress(0, total_epochs)
                 self._monitor_dialog.set_candidate_plan(
                     total_candidates=total_candidates,
                     active_candidate=candidate,
@@ -1258,10 +1457,14 @@ class NewModelDialog(QDialog):
             candidate = str(event.get("candidate") or "training_run")
             metrics = event.get("metrics")
             if isinstance(metrics, dict):
-                self._metric_rows[candidate].append(metrics)
+                metric_row = dict(metrics)
+                metric_row["candidate"] = candidate
+                self._metric_rows[candidate].append(metric_row)
                 self._active_candidate = candidate
                 history = pd.DataFrame(self._metric_rows[candidate]).sort_values("epoch")
                 if self._monitor_dialog is not None:
+                    current_epoch = int(metrics.get("epoch") or 0)
+                    self._monitor_dialog.set_epoch_progress(current_epoch, self._monitor_dialog._current_epoch_total)
                     self._monitor_dialog.update_history(history)
         elif event_type == "candidate_completed":
             self._candidate_rows.append(event)
@@ -1273,6 +1476,10 @@ class NewModelDialog(QDialog):
                     active_candidate="waiting for next candidate",
                     completed_candidates=len(self._candidate_rows),
                 )
+        elif event_type == "utilization_sample":
+            self._utilization_rows.append(dict(event))
+            if self._monitor_dialog is not None:
+                self._monitor_dialog.update_utilization(dict(event))
         elif event_type == "run_complete":
             model_path = event.get("model_path")
             if model_path:
@@ -1293,10 +1500,30 @@ class NewModelDialog(QDialog):
         success = bool(result.get("success"))
         cancelled = bool(result.get("cancelled"))
         self._run_complete = success
+        self._last_run_message = None
         if self._monitor_dialog is not None:
             self._monitor_dialog.set_running(False, state_label="done" if success else ("cancelled" if cancelled else "failed"))
         if not success and not cancelled:
-            QMessageBox.warning(self, "New Model", f"Training failed with exit code {result.get('exit_code')}.")
+            self._last_run_message = f"Training failed with exit code {result.get('exit_code')}."
+
+    def _on_monitor_closed(self, _result: int) -> None:
+        if self._monitor_dialog is not None:
+            self._monitor_dialog.deleteLater()
+            self._monitor_dialog = None
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.setFocus()
+        if self._run_complete:
+            self._set_post_run_state()
+        else:
+            self._set_pre_run_state()
+            if self._last_run_message:
+                QMessageBox.warning(self, "New Model", self._last_run_message)
+                self.raise_()
+                self.activateWindow()
+                self.setFocus()
 
     def _active_history_frame(self) -> pd.DataFrame:
         rows = self._metric_rows.get(self._active_candidate) or next(iter(self._metric_rows.values()), [])
@@ -1304,10 +1531,27 @@ class NewModelDialog(QDialog):
             return pd.DataFrame(columns=["epoch"])
         return pd.DataFrame(rows).sort_values("epoch")
 
+    def _completed_history_frame(self) -> pd.DataFrame:
+        if self._candidate_rows:
+            frame = pd.DataFrame(self._candidate_rows)
+            if "all_composite_score" in frame.columns:
+                best_row = frame.sort_values("all_composite_score", ascending=False).iloc[0]
+                candidate_name = str(best_row.get("candidate") or self._active_candidate)
+                rows = self._metric_rows.get(candidate_name)
+                if rows:
+                    return pd.DataFrame(rows).sort_values("epoch")
+        return self._active_history_frame()
+
     def _view_all_graphs(self) -> None:
+        history = self._completed_history_frame()
+        active_candidate = None
+        if not history.empty and "candidate" in history.columns:
+            active_candidate = str(history["candidate"].iloc[-1])
         dialog = GraphResultsDialog(
-            history=self._active_history_frame(),
+            history=history,
             candidate_rows=self._candidate_rows,
+            candidate_histories={name: pd.DataFrame(rows).sort_values("epoch") for name, rows in self._metric_rows.items() if rows},
+            active_candidate=active_candidate,
             cli_text="\n".join(self._all_logs),
             parent=self,
         )
@@ -1329,6 +1573,7 @@ class NewModelDialog(QDialog):
                 [
                     f"Benchmark: {self._current_launch.benchmark_label}",
                     f"Training Output: {self._current_launch.output_dir.as_posix()}",
+                    f"Compute Plan: {self._compute_plan_text}",
                 ]
             )
         if self.completed_model_path is not None:
