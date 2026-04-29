@@ -10,7 +10,8 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import pandas as pd
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -312,6 +313,8 @@ class UtilizationDialog(QDialog):
 class TrainingMonitorDialog(QDialog):
     """Dedicated run-monitoring window shown while the training process is active."""
 
+    close_confirmed = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Model Training Monitor")
@@ -333,7 +336,7 @@ class TrainingMonitorDialog(QDialog):
         self.view_utilization_button = QPushButton("View Utilization", self)
         self.cancel_button = QPushButton("Cancel", self)
         self.close_button = QPushButton("Close", self)
-        self.close_button.setEnabled(False)
+        self.close_button.setEnabled(True)
         header_row.addWidget(self.state_label)
         header_row.addWidget(self.compute_plan_label)
         header_row.addStretch(1)
@@ -388,6 +391,7 @@ class TrainingMonitorDialog(QDialog):
 
         self.view_gradient_button.clicked.connect(self._open_gradient_view)
         self.view_utilization_button.clicked.connect(self._open_utilization_view)
+        self.close_button.clicked.connect(self._confirm_close)
 
     def set_running(self, running: bool, *, state_label: str | None = None) -> None:
         self._running = running
@@ -505,10 +509,37 @@ class TrainingMonitorDialog(QDialog):
         dialog = UtilizationDialog(history=self._utilization_rows, parent=self)
         dialog.exec()
 
+    def _confirm_close(self) -> None:
+        confirm = QMessageBox.question(
+            self,
+            "Close Training Monitor",
+            "Are you sure you want to close the training monitor?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self.close_confirmed.emit()
+        super().accept()
+
     def reject(self) -> None:
         if self._running:
+            self._confirm_close()
             return
         super().reject()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._running:
+            super().closeEvent(event)
+            return
+        event.ignore()
+        confirm = QMessageBox.question(
+            self,
+            "Close Training Monitor",
+            "Are you sure you want to close the training monitor?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self.close_confirmed.emit()
+        super().accept()
 
 
 class GraphResultsDialog(QDialog):
@@ -1393,7 +1424,6 @@ class NewModelDialog(QDialog):
 
         self._monitor_dialog = TrainingMonitorDialog()
         self._monitor_dialog.cancel_button.clicked.connect(self._cancel_training)
-        self._monitor_dialog.close_button.clicked.connect(self._request_close_monitor)
         self._monitor_dialog.finished.connect(self._on_monitor_closed)
         self._monitor_dialog.set_running(True, state_label="running")
         self._monitor_dialog.set_compute_plan(self._compute_plan_text)
@@ -1414,18 +1444,6 @@ class NewModelDialog(QDialog):
         if confirm != QMessageBox.StandardButton.Yes:
             return
         self._training_service.cancel()
-
-    def _request_close_monitor(self) -> None:
-        if self._monitor_dialog is None:
-            return
-        confirm = QMessageBox.question(
-            self._monitor_dialog,
-            "Close Training Monitor",
-            "Are you sure you want to close the training monitor?",
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-        self._monitor_dialog.accept()
 
     def _append_log(self, line: str, _stream: str) -> None:
         self._all_logs.append(line)
@@ -1678,6 +1696,20 @@ class NewModelDialog(QDialog):
 
     def reject(self) -> None:
         if self._training_service.is_running:
-            QMessageBox.information(self, "New Model", "Close the monitor or cancel the run before closing this window.")
+            if self._monitor_dialog is not None:
+                QMessageBox.information(self, "New Model", "Close the monitor or cancel the run before closing this window.")
+                return
+            confirm = QMessageBox.question(
+                self,
+                "Close New Model",
+                "The training process is still stopping. Close this window anyway?",
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+            if not self._training_service.force_cancel():
+                QMessageBox.warning(self, "New Model", "Could not stop the training process yet. Try closing again in a few seconds.")
+                return
+            self._set_pre_run_state()
+            super().reject()
             return
         super().reject()

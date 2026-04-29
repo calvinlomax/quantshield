@@ -256,6 +256,7 @@ class QuantShieldMainWindow(QMainWindow):
         self._current_interval_mode = "auto"
         self._current_estimated_steps = 0
         self._holdings_dialog: HoldingsBreakdownDialog | None = None
+        self._checkpoint_dialog: CheckpointSelectionDialog | None = None
         self._max_portfolio_size = DEFAULT_MAX_PORTFOLIO_SIZE
 
         self.playback_timer = QTimer(self)
@@ -967,6 +968,11 @@ class QuantShieldMainWindow(QMainWindow):
         self._update_interval_controls()
 
     def _open_checkpoint_dialog(self) -> None:
+        if self._checkpoint_dialog is not None:
+            self._checkpoint_dialog.show()
+            self._checkpoint_dialog.raise_()
+            self._checkpoint_dialog.activateWindow()
+            return
         self._load_checkpoints()
         dialog = CheckpointSelectionDialog(
             descriptors=self._all_checkpoint_descriptors,
@@ -981,7 +987,20 @@ class QuantShieldMainWindow(QMainWindow):
             refresh_descriptors_callback=self._refresh_checkpoint_descriptors,
             parent=self,
         )
-        if not dialog.exec() or dialog.selected_descriptor is None:
+        self._checkpoint_dialog = dialog
+        dialog.finished.connect(self._on_checkpoint_dialog_closed)
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _on_checkpoint_dialog_closed(self, result: int) -> None:
+        dialog = self._checkpoint_dialog
+        self._checkpoint_dialog = None
+        if dialog is None:
+            return
+        if int(result) != int(QDialog.DialogCode.Accepted.value) or dialog.selected_descriptor is None:
+            dialog.deleteLater()
             return
         descriptor = dialog.selected_descriptor
         self._set_max_portfolio_size(dialog.selected_max_portfolio_size, refresh_checkpoints=False)
@@ -995,11 +1014,14 @@ class QuantShieldMainWindow(QMainWindow):
                 ),
             )
             if confirm != QMessageBox.StandardButton.Yes:
+                dialog.deleteLater()
                 return
             self._pending_checkpoint_descriptor = descriptor
             self.duration_combo.setCurrentText(descriptor.duration_key)
+            dialog.deleteLater()
             return
         self._apply_descriptor(descriptor, preserve_portfolio=True)
+        dialog.deleteLater()
 
     def _refresh_checkpoint_descriptors(self, preferred_model_path: Path | None = None) -> tuple[list[CheckpointDescriptor], CheckpointDescriptor | None]:
         self._load_checkpoints()

@@ -119,6 +119,10 @@ class ModelTrainingService(QObject):
     def is_running(self) -> bool:
         return self._process.state() != QProcess.ProcessState.NotRunning
 
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_requested
+
     def default_hyperparameters(self, *, mode: str, duration_key: str) -> dict[str, object]:
         profile = get_replay_duration_profile(duration_key)
         defaults = dict(self._load_script_defaults(mode))
@@ -332,6 +336,17 @@ class ModelTrainingService(QObject):
         self._set_state("cancelled")
         self._process.terminate()
         self._kill_timer.start()
+
+    def force_cancel(self, timeout_ms: int = 1500) -> bool:
+        """Stop a training process immediately enough for UI teardown."""
+        if not self.is_running:
+            return True
+        self._cancel_requested = True
+        self._set_state("cancelled")
+        self._kill_timer.stop()
+        self._utilization_timer.stop()
+        self._process.kill()
+        return bool(self._process.waitForFinished(timeout_ms))
 
     def _kill_process(self) -> None:
         if self.is_running:

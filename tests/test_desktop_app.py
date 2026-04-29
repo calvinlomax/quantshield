@@ -983,6 +983,58 @@ def test_main_window_defers_close_while_worker_thread_is_running(tmp_path, monke
     app.processEvents()
 
 
+def test_main_window_opens_model_selector_without_modal_exec(tmp_path, monkeypatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.services.checkpoint_service import CheckpointDescriptor
+    from quantshield_app.ui.main_window import QuantShieldMainWindow
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    window = QuantShieldMainWindow(checkpoint_service=CheckpointService(search_roots=[tmp_path / "checkpoints"]))
+    duration_key = window._active_duration_key()
+    descriptor = CheckpointDescriptor(
+        path=Path("outputs/replay_checkpoint_suites/1y/actor_critic_policy.pt"),
+        tickers=["SPY", "QQQ", "GLD", "IVV", "VOO"],
+        lookback_window=63,
+        hidden_dim=224,
+        attention_heads=8,
+        attention_layers=4,
+        duration_key=duration_key,
+        candidate_name="balanced_192x6x4",
+    )
+    shown: list[bool] = []
+
+    class FakeCheckpointDialog(qtwidgets.QDialog):
+        def __init__(self, **_kwargs: object) -> None:
+            super().__init__(window)
+            self.selected_descriptor = descriptor
+            self.selected_max_portfolio_size = 10
+
+        def exec(self) -> int:
+            raise AssertionError("Select Model must not use exec() while New Model can launch a monitor.")
+
+        def show(self) -> None:
+            shown.append(True)
+            super().show()
+
+    monkeypatch.setattr("quantshield_app.ui.main_window.CheckpointSelectionDialog", FakeCheckpointDialog)
+    monkeypatch.setattr(window, "_load_checkpoints", lambda: setattr(window, "_all_checkpoint_descriptors", [descriptor]))
+
+    window._open_checkpoint_dialog()
+    app.processEvents()
+
+    assert shown == [True]
+    assert window._checkpoint_dialog is not None
+    window._checkpoint_dialog.accept()
+    app.processEvents()
+
+    assert window._checkpoint_dialog is None
+    assert window._current_descriptor == descriptor
+
+    window.deleteLater()
+    app.processEvents()
+
+
 def test_checkpoint_selection_dialog_tracks_visible_tab_selection() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
@@ -1398,12 +1450,24 @@ def test_new_model_dialog_stages_preview_and_save_flow(monkeypatch) -> None:
 
     class FakeService:
         is_running = True
+        force_cancel_called = False
 
-    dialog._training_service = FakeService()  # type: ignore[assignment]
-    messages: list[str] = []
-    monkeypatch.setattr("quantshield_app.ui.new_model_dialog.QMessageBox.information", lambda *args, **kwargs: messages.append("info"))
+        def force_cancel(self) -> bool:
+            self.force_cancel_called = True
+            self.is_running = False
+            return True
+
+    fake_service = FakeService()
+    dialog._training_service = fake_service  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "quantshield_app.ui.new_model_dialog.QMessageBox.question",
+        lambda *args, **kwargs: qtwidgets.QMessageBox.StandardButton.Yes,
+    )
+    dialog.show()
+    app.processEvents()
     dialog.reject()
-    assert messages == ["info"]
+    assert fake_service.force_cancel_called is True
+    assert dialog.isVisible() is False
 
     dialog.deleteLater()
     app.processEvents()
@@ -1607,6 +1671,53 @@ def test_training_monitor_dialog_close_button_stays_enabled_while_running() -> N
     app.processEvents()
 
 
+def test_training_monitor_dialog_buttons_are_connected(monkeypatch) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from quantshield_app.ui.new_model_dialog import TrainingMonitorDialog
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    opened: list[str] = []
+    confirmed: list[bool] = []
+
+    class FakeGradientDialog:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def exec(self) -> int:
+            opened.append("gradient")
+            return 0
+
+    class FakeUtilizationDialog:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def exec(self) -> int:
+            opened.append("utilization")
+            return 0
+
+    monkeypatch.setattr("quantshield_app.ui.new_model_dialog.GradientViewDialog", FakeGradientDialog)
+    monkeypatch.setattr("quantshield_app.ui.new_model_dialog.UtilizationDialog", FakeUtilizationDialog)
+    monkeypatch.setattr(
+        "quantshield_app.ui.new_model_dialog.QMessageBox.question",
+        lambda *args, **kwargs: qtwidgets.QMessageBox.StandardButton.Yes,
+    )
+
+    dialog = TrainingMonitorDialog()
+    dialog.close_confirmed.connect(lambda: confirmed.append(True))
+    dialog.view_gradient_button.click()
+    dialog.view_utilization_button.click()
+    dialog.close_button.click()
+    app.processEvents()
+
+    assert opened == ["gradient", "utilization"]
+    assert confirmed == [True]
+    assert dialog.isVisible() is False
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_new_model_dialog_can_close_monitor_with_confirmation(monkeypatch, tmp_path: Path) -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
@@ -1630,7 +1741,7 @@ def test_new_model_dialog_can_close_monitor_with_confirmation(monkeypatch, tmp_p
         lambda *args, **kwargs: qtwidgets.QMessageBox.StandardButton.Yes,
     )
 
-    dialog._request_close_monitor()
+    dialog._monitor_dialog.close_button.click()
     app.processEvents()
 
     assert dialog.isVisible() is True

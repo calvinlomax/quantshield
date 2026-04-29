@@ -1,0 +1,159 @@
+<svg width="1800" height="1120" viewBox="0 0 1800 1120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1800" y2="1120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101828"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#1F2937"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="actor" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#14532D"/>
+      <stop offset="1" stop-color="#166534"/>
+    </linearGradient>
+    <linearGradient id="critic" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#3B0764"/>
+      <stop offset="1" stop-color="#5B21B6"/>
+    </linearGradient>
+    <linearGradient id="reward" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#7C2D12"/>
+      <stop offset="1" stop-color="#9A3412"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#020617" flood-opacity="0.32"/>
+    </filter>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12V0Z" fill="#60A5FA"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12V0Z" fill="#4ADE80"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12V0Z" fill="#C084FC"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12V0Z" fill="#FB923C"/>
+    </marker>
+    <style>
+      .title { font: 700 36px 'SF Pro Display', 'Segoe UI', sans-serif; fill: #F8FAFC; }
+      .subtitle { font: 500 18px 'SF Pro Text', 'Segoe UI', sans-serif; fill: #CBD5E1; }
+      .section { font: 700 21px 'SF Pro Display', 'Segoe UI', sans-serif; fill: #F8FAFC; letter-spacing: 0; }
+      .label { font: 650 17px 'SF Pro Text', 'Segoe UI', sans-serif; fill: #F8FAFC; }
+      .small { font: 500 14px 'SF Pro Text', 'Segoe UI', sans-serif; fill: #D1D5DB; }
+      .tiny { font: 500 12px 'SF Pro Text', 'Segoe UI', sans-serif; fill: #CBD5E1; }
+      .math { font: 600 15px 'SF Mono', 'Menlo', monospace; fill: #BFDBFE; }
+      .metric { font: 600 14px 'SF Mono', 'Menlo', monospace; fill: #FDE68A; }
+      .arrowLabel { font: 700 13px 'SF Pro Text', 'Segoe UI', sans-serif; fill: #DBEAFE; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1120" fill="url(#bg)"/>
+  <text x="72" y="76" class="title">QuantShield Transformer Actor-Critic Framework</text>
+  <text x="72" y="112" class="subtitle">Offline reinforcement learning pipeline</text>
+  <text x="72" y="136" class="subtitle">Implementation reference: <tspan class="math">src/quantshield/rl.py</tspan></text>
+
+  <rect x="56" y="164" width="1688" height="882" rx="28" fill="#0B1220" stroke="#1E293B" stroke-width="2"/>
+
+  <!-- Top row: data to encoded context -->
+  <rect x="100" y="198" width="340" height="288" rx="22" fill="url(#panel)" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+  <text x="128" y="236" class="section">1. Offline Samples</text>
+  <rect x="128" y="260" width="284" height="74" rx="16" fill="#172554" stroke="#3B82F6"/>
+  <text x="152" y="288" class="label">State tensor</text>
+  <text x="152" y="313" class="math">[assets, lookback, features]</text>
+  <rect x="128" y="352" width="284" height="58" rx="16" fill="#1E293B" stroke="#64748B"/>
+  <text x="152" y="384" class="label">Demonstration action</text>
+  <text x="152" y="405" class="tiny">Target weights from optimization objectives</text>
+  <rect x="128" y="426" width="284" height="38" rx="14" fill="#3F3F46" stroke="#71717A"/>
+  <text x="152" y="451" class="small">Forward segment realized return</text>
+
+  <rect x="540" y="198" width="430" height="288" rx="22" fill="url(#panel)" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+  <text x="568" y="236" class="section">2. Cross-Asset Encoder</text>
+  <rect x="568" y="260" width="374" height="64" rx="16" fill="#1F2937" stroke="#60A5FA"/>
+  <text x="592" y="288" class="label">Input projection</text>
+  <text x="592" y="309" class="tiny">Linear + LayerNorm + GELU per asset history</text>
+  <rect x="568" y="342" width="374" height="54" rx="16" fill="#1E3A8A" stroke="#93C5FD"/>
+  <text x="592" y="375" class="label">Learned asset embedding</text>
+  <rect x="568" y="414" width="374" height="50" rx="16" fill="#0F766E" stroke="#5EEAD4"/>
+  <text x="592" y="445" class="label">Transformer encoder: cross-asset attention</text>
+
+  <rect x="1070" y="198" width="300" height="288" rx="22" fill="url(#actor)" stroke="#4ADE80" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1098" y="236" class="section">3. Actor</text>
+  <rect x="1098" y="260" width="244" height="54" rx="16" fill="#166534" stroke="#86EFAC"/>
+  <text x="1122" y="292" class="label">Actor head</text>
+  <rect x="1098" y="332" width="244" height="54" rx="16" fill="#14532D" stroke="#86EFAC"/>
+  <text x="1122" y="363" class="label">Softplus + 1.0</text>
+  <text x="1122" y="384" class="tiny">Dirichlet concentration</text>
+  <rect x="1098" y="404" width="244" height="58" rx="16" fill="#15803D" stroke="#BBF7D0"/>
+  <text x="1122" y="434" class="label">Policy distribution</text>
+  <text x="1122" y="456" class="math">pi(a | s) ~ Dirichlet(alpha)</text>
+
+  <rect x="1460" y="198" width="240" height="288" rx="22" fill="url(#critic)" stroke="#C084FC" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1488" y="236" class="section">4. Critic</text>
+  <rect x="1488" y="260" width="184" height="50" rx="16" fill="#5B21B6" stroke="#DDD6FE"/>
+  <text x="1510" y="291" class="label">Pool context</text>
+  <rect x="1488" y="328" width="184" height="62" rx="16" fill="#6D28D9" stroke="#DDD6FE"/>
+  <text x="1510" y="354" class="label">Concat</text>
+  <text x="1510" y="376" class="tiny">context + action</text>
+  <rect x="1488" y="408" width="184" height="54" rx="16" fill="#7C3AED" stroke="#E9D5FF"/>
+  <text x="1510" y="438" class="label">Q(s, a)</text>
+
+  <path d="M440 342H518" stroke="#60A5FA" stroke-width="4" marker-end="url(#arrowBlue)"/>
+  <text x="465" y="326" class="arrowLabel">state</text>
+  <path d="M970 342H1048" stroke="#4ADE80" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <text x="990" y="318" class="arrowLabel">context</text>
+  <path d="M970 438H1438" stroke="#C084FC" stroke-width="4" marker-end="url(#arrowPurple)"/>
+  <text x="1168" y="416" class="arrowLabel">encoded context</text>
+  <path d="M1370 342H1438" stroke="#C084FC" stroke-width="4" marker-end="url(#arrowPurple)"/>
+  <text x="1386" y="318" class="arrowLabel">action</text>
+
+  <!-- Bottom row: reward and optimization -->
+  <rect x="100" y="560" width="1600" height="380" rx="24" fill="url(#reward)" stroke="#FB923C" stroke-width="2" filter="url(#shadow)"/>
+  <text x="128" y="600" class="section">5. Reward Composition and Offline Objective</text>
+
+  <rect x="130" y="636" width="246" height="86" rx="16" fill="#7C2D12" stroke="#FDBA74"/>
+  <text x="154" y="668" class="label">Policy raw return</text>
+  <text x="154" y="693" class="tiny">Cumulative forward-segment return</text>
+  <text x="154" y="714" class="math">R_policy</text>
+
+  <rect x="432" y="636" width="208" height="86" rx="16" fill="#9A3412" stroke="#FDBA74"/>
+  <text x="456" y="668" class="label">Benchmark</text>
+  <text x="456" y="693" class="tiny">ETF or ticker baseline</text>
+
+  <rect x="686" y="636" width="208" height="86" rx="16" fill="#9A3412" stroke="#FDBA74"/>
+  <text x="710" y="668" class="label">Equal weight</text>
+  <text x="710" y="693" class="tiny">Uniform universe weights</text>
+
+  <rect x="940" y="636" width="208" height="86" rx="16" fill="#9A3412" stroke="#FDBA74"/>
+  <text x="964" y="668" class="label">Markowitz</text>
+  <text x="964" y="693" class="tiny">Long-only mean-variance</text>
+
+  <rect x="1194" y="636" width="250" height="86" rx="16" fill="#9A3412" stroke="#FDBA74"/>
+  <text x="1218" y="668" class="label">Restricted random</text>
+  <text x="1218" y="693" class="tiny">Feasible random allocation</text>
+
+  <path d="M376 679H410" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+  <path d="M640 679H664" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+  <path d="M894 679H918" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+  <path d="M1148 679H1172" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+
+  <rect x="252" y="778" width="826" height="96" rx="18" fill="#431407" stroke="#FDBA74" stroke-width="2"/>
+  <text x="280" y="812" class="label">Composite training reward</text>
+  <text x="280" y="840" class="metric">w_raw * R_policy + w_cmp * active excess + w_rr * random excess</text>
+  <text x="280" y="864" class="tiny">active excess compares against max(Benchmark, Equal Weight, Markowitz)</text>
+
+  <rect x="1164" y="778" width="354" height="96" rx="18" fill="#7C2D12" stroke="#FDBA74" stroke-width="2"/>
+  <text x="1192" y="812" class="label">Training losses</text>
+  <text x="1192" y="838" class="tiny">actor loss, critic loss, behavior-cloning loss</text>
+  <text x="1192" y="862" class="tiny">updated from offline batches over sampled windows</text>
+
+  <path d="M253 722V756H665V772" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+  <path d="M536 722V756H665V772" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+  <path d="M790 722V756H665V772" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+  <path d="M1044 722V756H665V772" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+  <path d="M1319 722V756H665V772" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+  <path d="M1078 826H1142" stroke="#FB923C" stroke-width="4" marker-end="url(#arrowOrange)"/>
+
+  <rect x="100" y="966" width="1600" height="40" rx="18" fill="#111827" stroke="#334155"/>
+  <text x="130" y="991" class="small">Inference uses the learned actor only: policy mean = alpha / sum(alpha). The critic and reward path support training, scoring, and model selection.</text>
+</svg>

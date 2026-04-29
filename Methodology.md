@@ -1,5 +1,7 @@
 # QuantShield Methodology
 
+Author: Calvin J. Lomax
+
 ## Abstract
 
 QuantShield is a local portfolio research, model-training, and historical replay system that combines classical portfolio construction, benchmark-relative evaluation, and offline reinforcement learning inside a single desktop-oriented workflow. The repository couples a PySide6 application with a research stack for market-data ingestion, preprocessing, risk estimation, optimization, policy training, model scoring, and experiment management. This document formalizes the main theoretical and systems principles underlying the project, with emphasis on the mathematical structure of the optimization layer, the reward shaping used for policy learning, the replay engine used for historical simulation, and the software-engineering constraints required to make the system usable on commodity local hardware.
