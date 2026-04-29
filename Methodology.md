@@ -1,10 +1,15 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
 # QuantShield Methodology
 
 Author: Calvin J. Lomax
 
 ## Abstract
 
-QuantShield is a local portfolio research, model-training, and historical replay system that combines classical portfolio construction, benchmark-relative evaluation, and offline reinforcement learning inside a single desktop-oriented workflow. The repository couples a PySide6 application with a research stack for market-data ingestion, preprocessing, risk estimation, optimization, policy training, model scoring, and experiment management. This document formalizes the main theoretical and systems principles underlying the project, with emphasis on the mathematical structure of the optimization layer, the reward shaping used for policy learning, the replay engine used for historical simulation, and the software-engineering constraints required to make the system usable on commodity local hardware.
+QuantShield is a local portfolio research, model-training, and historical replay system that combines classical portfolio construction, benchmark-relative evaluation, and offline reinforcement learning inside a single desktop-oriented workflow. The repository couples a PySide6 application with a research stack for market-data ingestion, preprocessing, risk estimation, optimization, policy training, model scoring, and experiment management. This document formalizes the main theoretical and systems principles underlying the project, with emphasis on the mathematical structure of the optimization layer, the reward shaping used for policy learning, the replay engine used for historical simulation, and the software-engineering constraints required to make the system usable on commodity local hardware. The methodology draws on modern portfolio theory, covariance shrinkage, risk-parity allocation, actor-critic learning, offline RL, and transformer sequence modeling [1]-[8].
 
 ## 1. Problem Setting
 
@@ -77,7 +82,7 @@ QuantShield uses several standard portfolio-construction baselines.
 
 ### 3.1 Equal Weight
 
-The equal-weight portfolio for a universe of size \(N\) is
+The equal-weight portfolio for a universe of size \(N\) is a simple diversification baseline [9]:
 
 $$
 w^{\text{EW}} = \left(\frac{1}{N}, \dots, \frac{1}{N}\right).
@@ -87,7 +92,7 @@ This serves as both a benchmark and a control. It is intentionally simple, trans
 
 ### 3.2 Mean-Variance / Markowitz
 
-For an estimated mean vector \(\mu \in \mathbb{R}^N\) and covariance matrix \(\Sigma \in \mathbb{R}^{N \times N}\), the long-only mean-variance problem is modeled as
+For an estimated mean vector \(\mu \in \mathbb{R}^N\) and covariance matrix \(\Sigma \in \mathbb{R}^{N \times N}\), the long-only mean-variance problem is modeled as the Markowitz objective [1]. The covariance estimate may use shrinkage methods to improve conditioning in high-dimensional or short-history settings [2]:
 
 $$
 \max_{w \in \Delta^N} \; \mu^\top w - \frac{\lambda}{2} w^\top \Sigma w
@@ -111,7 +116,7 @@ $$
 \min_{w \in \Delta^N} \; w^\top \Sigma w.
 $$
 
-Risk parity seeks weights such that each asset contributes approximately the same amount of marginal portfolio risk. If
+Risk parity seeks weights such that each asset contributes approximately the same amount of marginal portfolio risk [3]. If
 
 $$
 \sigma_p(w) = \sqrt{w^\top \Sigma w},
@@ -179,7 +184,7 @@ where \(F\) is the feature dimension per asset per time step. The current implem
 
 ### 5.2 Action Space
 
-The actor outputs a simplex-constrained allocation:
+The actor outputs a simplex-constrained allocation. In the actor-critic models, this allocation is represented with a Dirichlet policy over the simplex [10]:
 
 $$
 \pi_\theta(s_t) = w_t \in \Delta^N.
@@ -201,7 +206,7 @@ For each rebalance date \(t_k\), QuantShield stores:
 - a target allocation \(a_{t_k}\);
 - a realized forward reward over the holding segment \([t_k+1, t_{k+1}]\).
 
-This makes the training problem a hybrid between imitation learning and value-based policy improvement over a fixed historical dataset.
+This makes the training problem a hybrid between imitation learning and value-based policy improvement over a fixed historical dataset [6], [11].
 
 ## 6. Reward Design
 
@@ -263,7 +268,7 @@ For very short horizons such as one-month daily-frequency training, covariance e
 
 ## 7. Transformer Actor-Critic Architecture
 
-QuantShield uses a cross-asset attention architecture to process multi-asset rolling windows. If \(x_{i,t}\) denotes the feature sequence for asset \(i\), the model embeds each asset trajectory and applies stacked attention blocks across the joint asset-state representation.
+QuantShield uses a cross-asset attention architecture to process multi-asset rolling windows. If \(x_{i,t}\) denotes the feature sequence for asset \(i\), the model embeds each asset trajectory and applies stacked attention blocks across the joint asset-state representation. The cross-asset encoder follows the transformer self-attention mechanism [7].
 
 At a high level:
 
@@ -289,7 +294,7 @@ the repository now normalizes incompatible \((d, H)\) combinations before model 
 
 ## 8. Training Objective
 
-The actor-critic training objective blends reinforcement-style reward optimization with behavior cloning toward the offline target allocations. In stylized form:
+The actor-critic training objective blends reinforcement-style reward optimization with behavior cloning toward the offline target allocations. The value-learning component follows actor-critic principles [5], [8], while the imitation component follows the behavior-cloning idea of learning directly from demonstrated actions [11]. In stylized form:
 
 $$
 \mathcal{L}
@@ -306,11 +311,11 @@ Here:
 - \(\mathcal{L}_{\text{critic}}\) fits value estimates;
 - \(\mathcal{L}_{\text{entropy}}\) discourages premature collapse.
 
-The behavior-cloning coefficient is especially important in small-data or short-horizon settings, where pure policy optimization can overfit to noise.
+The behavior-cloning coefficient is especially important in small-data or short-horizon settings, where pure policy optimization can overfit to noise. Optimization uses Adam or AdamW-style adaptive gradient methods [12], [13].
 
 ## 9. Model Selection and Scoring
 
-QuantShield does not treat the last epoch as automatically optimal. Instead, candidate models are evaluated on benchmark summaries and aggregate score tables. The key statistics include:
+QuantShield does not treat the last epoch as automatically optimal. Instead, candidate models are evaluated on benchmark summaries and aggregate score tables. Statistical outperformance uses one-sided \(t\)-style tests grounded in the classical Student test [14]. The key statistics include:
 
 - mean raw return;
 - mean excess return versus benchmark;
@@ -322,14 +327,14 @@ The desktop app then surfaces these saved models with quality labels such as `Va
 
 ## 10. Compute Allocation on Local Hardware
 
-QuantShield is designed for local execution on commodity hardware, including Apple Silicon laptops. Before app-triggered training begins, the system evaluates:
+QuantShield is designed for local execution on commodity hardware, including Apple Silicon laptops. Model training is implemented with PyTorch [15]. Before app-triggered training begins, the system evaluates:
 
 - physical core count;
 - logical core count;
 - available and total RAM;
 - hardware acceleration availability (`mps`, `cuda`, or `cpu`).
 
-Hyperparameters such as batch size and experiment candidate-pool size are then capped according to the device profile. This is a pragmatic systems decision. The objective is not to maximize nominal search breadth at all costs, but to keep the run feasible, observable, and recoverable on the user’s machine.
+Hyperparameters such as batch size and experiment candidate-pool size are then capped according to the device profile. This is a pragmatic systems decision. The objective is not to maximize nominal search breadth at all costs, but to keep the run feasible, observable, and recoverable on the user's machine.
 
 ## 11. Desktop-App Systems Design
 
@@ -376,7 +381,7 @@ These choices are not incidental. They are central to making a local quantitativ
 
 ## 13. Conclusion
 
-QuantShield is best understood as a layered decision-support system rather than a single algorithm. Classical optimization, offline policy learning, integer-share replay, desktop visualization, and experiment management all interact. The repository’s methodology therefore combines:
+QuantShield is best understood as a layered decision-support system rather than a single algorithm. Classical optimization, offline policy learning, integer-share replay, desktop visualization, and experiment management all interact. The repository's methodology therefore combines:
 
 1. standard portfolio theory for transparent baselines;
 2. reward-shaped offline RL for adaptive allocation policies;
@@ -384,3 +389,35 @@ QuantShield is best understood as a layered decision-support system rather than 
 4. UI design that exposes model behavior rather than hiding it.
 
 The resulting application is not merely a charting wrapper around saved checkpoints. It is a full local environment for constructing, evaluating, training, and comparing portfolio allocation strategies under explicit mathematical and software-engineering constraints.
+
+## References
+
+[1] H. Markowitz, "Portfolio selection," *The Journal of Finance*, vol. 7, no. 1, pp. 77-91, Mar. 1952.
+
+[2] O. Ledoit and M. Wolf, "A well-conditioned estimator for large-dimensional covariance matrices," *Journal of Multivariate Analysis*, vol. 88, no. 2, pp. 365-411, Feb. 2004.
+
+[3] S. Maillard, T. Roncalli, and J. Teiletche, "The properties of equally weighted risk contribution portfolios," *The Journal of Portfolio Management*, vol. 36, no. 4, pp. 60-70, Summer 2010.
+
+[4] W. F. Sharpe, "Mutual fund performance," *The Journal of Business*, vol. 39, no. 1, pp. 119-138, Jan. 1966.
+
+[5] R. S. Sutton and A. G. Barto, *Reinforcement Learning: An Introduction*, 2nd ed. Cambridge, MA, USA: MIT Press, 2018.
+
+[6] S. Levine, A. Kumar, G. Tucker, and J. Fu, "Offline reinforcement learning: Tutorial, review, and perspectives on open problems," arXiv:2005.01643, 2020.
+
+[7] A. Vaswani *et al*., "Attention is all you need," in *Advances in Neural Information Processing Systems*, vol. 30, 2017.
+
+[8] V. Mnih *et al*., "Asynchronous methods for deep reinforcement learning," in *Proc. 33rd Int. Conf. Machine Learning*, New York, NY, USA, 2016, pp. 1928-1937.
+
+[9] V. DeMiguel, L. Garlappi, and R. Uppal, "Optimal versus naive diversification: How inefficient is the 1/N portfolio strategy?" *The Review of Financial Studies*, vol. 22, no. 5, pp. 1915-1953, May 2009.
+
+[10] T. P. Minka, "Estimating a Dirichlet distribution," Microsoft Research, Cambridge, U.K., Tech. Rep., 2000.
+
+[11] D. A. Pomerleau, "ALVINN: An autonomous land vehicle in a neural network," in *Advances in Neural Information Processing Systems*, vol. 1, 1989.
+
+[12] D. P. Kingma and J. Ba, "Adam: A method for stochastic optimization," in *Proc. Int. Conf. Learning Representations*, 2015.
+
+[13] I. Loshchilov and F. Hutter, "Decoupled weight decay regularization," in *Proc. Int. Conf. Learning Representations*, 2019.
+
+[14] Student, "The probable error of a mean," *Biometrika*, vol. 6, no. 1, pp. 1-25, Mar. 1908.
+
+[15] A. Paszke *et al*., "PyTorch: An imperative style, high-performance deep learning library," in *Advances in Neural Information Processing Systems*, vol. 32, 2019.

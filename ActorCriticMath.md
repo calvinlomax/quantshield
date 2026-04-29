@@ -1,10 +1,15 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
 # Mathematical Specification of the QuantShield Actor-Critic Framework
 
 Author: Calvin J. Lomax
 
 ## Abstract
 
-This document states the mathematical objects, objectives, and evaluation criteria underlying the QuantShield transformer actor-critic framework. The system is an offline reinforcement-learning model trained from historical portfolio-weight demonstrations and realized forward returns. The actor maps a multi-asset return state into a long-only portfolio distribution, while the critic estimates the value of a state-action pair. Training combines behavior cloning, critic regression, entropy regularization, and reward maximization against benchmark, equal-weight, restricted-random, and Markowitz baselines.
+This document states the mathematical objects, objectives, and evaluation criteria underlying the QuantShield transformer actor-critic framework. The system is an offline reinforcement-learning model trained from historical portfolio-weight demonstrations and realized forward returns. The actor maps a multi-asset return state into a long-only portfolio distribution, while the critic estimates the value of a state-action pair. Training combines behavior cloning, critic regression, entropy regularization, and reward maximization against benchmark, equal-weight, restricted-random, and Markowitz baselines. The framework uses modern portfolio theory, actor-critic reinforcement learning, offline RL, transformer attention, Dirichlet policies, and adaptive stochastic optimization [1]-[9].
 
 ## 1. Market and Portfolio Notation
 
@@ -176,7 +181,7 @@ $$
 
 ### 4.2 Equal-Weight Portfolio
 
-The equal-weight portfolio is
+The equal-weight portfolio is a naive diversification baseline [10]:
 
 $$
 \mathbf{w}^{\mathrm{eq}}
@@ -222,7 +227,7 @@ $$
 
 ### 4.4 Markowitz Mean-Variance Portfolio
 
-Let \(\boldsymbol{\mu}_t\) and \(\boldsymbol{\Sigma}_t\) be the estimated annualized mean vector and covariance matrix from the lookback window. The long-only Markowitz baseline solves
+Let \(\boldsymbol{\mu}_t\) and \(\boldsymbol{\Sigma}_t\) be the estimated annualized mean vector and covariance matrix from the lookback window. QuantShield may use covariance shrinkage to improve the conditioning of \(\boldsymbol{\Sigma}_t\) [2]. The long-only Markowitz baseline solves the mean-variance allocation problem [1]:
 
 $$
 \mathbf{w}^{\mathrm{mv}}_t
@@ -385,7 +390,7 @@ $$
 \mathbb{R}^{N\times d}.
 $$
 
-The transformer encoder maps
+The transformer encoder maps the asset-token matrix through self-attention layers [7]:
 
 $$
 \mathbf{H}_t
@@ -454,7 +459,7 @@ $$
 \end{bmatrix}^{\top}.
 $$
 
-The stochastic policy is
+The stochastic policy is a Dirichlet distribution over the portfolio simplex [6]:
 
 $$
 \pi_{\theta}(\mathbf{a}_t \mid \mathbf{S}_t)
@@ -558,7 +563,7 @@ Q_{\phi}(\mathbf{S}_t,\mathbf{a}^{\mathrm{demo}}_t)
 \right)^2.
 $$
 
-The behavior-cloning loss is
+The behavior-cloning loss follows imitation-learning practice in which the policy is anchored to demonstrated actions [11]:
 
 $$
 \mathcal{L}_{\mathrm{BC}}
@@ -645,7 +650,7 @@ $$
 
 where \(c\) is the configured gradient-clip norm.
 
-Parameters are updated with Adam or AdamW:
+Parameters are updated with Adam or AdamW [8], [9] in PyTorch [14]:
 
 $$
 \theta,\phi
@@ -720,7 +725,7 @@ R_t^{\mathrm{policy}}
 R_t^{\mathrm{mv}}.
 $$
 
-QuantShield ranks candidate checkpoints by multi-baseline evidence. For a generic excess series \(\{E_t\}_{t=1}^{n}\), define
+QuantShield ranks candidate checkpoints by multi-baseline evidence. For a generic excess series \(\{E_t\}_{t=1}^{n}\), one-sided outperformance is summarized with a Student-style \(t\)-statistic [12]. Define
 
 $$
 \bar{E}
@@ -891,7 +896,7 @@ $$
 \sqrt{P}\operatorname{Std}(\rho_t).
 $$
 
-Given risk-free rate \(r_f\), Sharpe ratio is
+Given risk-free rate \(r_f\), Sharpe ratio is [13]
 
 $$
 \operatorname{Sharpe}
@@ -983,3 +988,33 @@ R_t^{\mathrm{policy}}
 $$
 
 The result is an offline policy that learns from portfolio-optimization demonstrations while being directly evaluated against practical investment baselines.
+
+## References
+
+[1] H. Markowitz, "Portfolio selection," *The Journal of Finance*, vol. 7, no. 1, pp. 77-91, Mar. 1952.
+
+[2] O. Ledoit and M. Wolf, "A well-conditioned estimator for large-dimensional covariance matrices," *Journal of Multivariate Analysis*, vol. 88, no. 2, pp. 365-411, Feb. 2004.
+
+[3] S. Maillard, T. Roncalli, and J. Teiletche, "The properties of equally weighted risk contribution portfolios," *The Journal of Portfolio Management*, vol. 36, no. 4, pp. 60-70, Summer 2010.
+
+[4] R. S. Sutton and A. G. Barto, *Reinforcement Learning: An Introduction*, 2nd ed. Cambridge, MA, USA: MIT Press, 2018.
+
+[5] S. Levine, A. Kumar, G. Tucker, and J. Fu, "Offline reinforcement learning: Tutorial, review, and perspectives on open problems," arXiv:2005.01643, 2020.
+
+[6] T. P. Minka, "Estimating a Dirichlet distribution," Microsoft Research, Cambridge, U.K., Tech. Rep., 2000.
+
+[7] A. Vaswani *et al*., "Attention is all you need," in *Advances in Neural Information Processing Systems*, vol. 30, 2017.
+
+[8] D. P. Kingma and J. Ba, "Adam: A method for stochastic optimization," in *Proc. Int. Conf. Learning Representations*, 2015.
+
+[9] I. Loshchilov and F. Hutter, "Decoupled weight decay regularization," in *Proc. Int. Conf. Learning Representations*, 2019.
+
+[10] V. DeMiguel, L. Garlappi, and R. Uppal, "Optimal versus naive diversification: How inefficient is the 1/N portfolio strategy?" *The Review of Financial Studies*, vol. 22, no. 5, pp. 1915-1953, May 2009.
+
+[11] D. A. Pomerleau, "ALVINN: An autonomous land vehicle in a neural network," in *Advances in Neural Information Processing Systems*, vol. 1, 1989.
+
+[12] Student, "The probable error of a mean," *Biometrika*, vol. 6, no. 1, pp. 1-25, Mar. 1908.
+
+[13] W. F. Sharpe, "Mutual fund performance," *The Journal of Business*, vol. 39, no. 1, pp. 119-138, Jan. 1966.
+
+[14] A. Paszke *et al*., "PyTorch: An imperative style, high-performance deep learning library," in *Advances in Neural Information Processing Systems*, vol. 32, 2019.
