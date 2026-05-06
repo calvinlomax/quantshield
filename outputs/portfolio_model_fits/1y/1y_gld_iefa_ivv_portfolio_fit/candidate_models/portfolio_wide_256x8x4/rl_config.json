@@ -1,0 +1,19 @@
+{
+  "lookback_window": 63,
+  "hidden_dim": 256,
+  "attention_heads": 8,
+  "attention_layers": 4,
+  "dropout": 0.06999999999999999,
+  "learning_rate": 0.00064,
+  "weight_decay": 2.2000000000000003e-05,
+  "batch_size": 32,
+  "epochs": 68,
+  "actor_bc_weight": 2.6125,
+  "entropy_weight": 0.00036,
+  "validation_fraction": 0.2,
+  "gradient_clip_norm": 1.0,
+  "seed": 46,
+  "optimizer_name": "adamw",
+  "checkpoint_frequency": 0,
+  "early_stopping_patience": 0
+}

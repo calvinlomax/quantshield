@@ -1,0 +1,30 @@
+Portfolio Fit: 20260506_111642
+Tickers: GLD, IEFA, IVV, QQQ, SPY, VEA, VOO, VTI, VTV, VUG
+Training horizon: 1y
+Start date: 2025-05-20
+End date: 2026-05-06
+Benchmark: SPY
+Rebalance frequency: B
+Selected candidate: portfolio_deep_224x8x5
+Selected epoch: 32
+
+Composite model score:
+            benchmark_component  equal_weight_component  restricted_random_component  markowitz_component  raw_return_component  significance_component  significance_bonus  weight_error_penalty  composite_score
+Split                                                                                                                                                                                                             
+train                   -0.1508                 -0.7781                      -0.5571              -2.1214                0.3156                -11.3176              0.0000                5.6415         -20.2509
+validation              -0.7975                  0.5288                       0.0818               4.6887                2.1854                 10.3905              5.0000                5.3528          16.7248
+all                     -0.2805                 -0.5162                      -0.4291              -0.7481                0.6967                 -9.2264              0.0000                5.5836         -16.0872
+
+Baseline ticker qualification:
+     split  beats_all_tickers  significant_vs_all_tickers  min_mean_excess_return  mean_mean_excess_return
+     train              False                       False               -0.002703                -0.000389
+validation              False                       False               -0.001632                 0.000264
+       all              False                       False               -0.001208                -0.000258
+
+Candidate sweep:
+                     candidate  selected_epoch  hidden_dim  attention_heads  attention_layers  epochs                                                                                                                              objectives  training_samples  evaluation_samples  all_composite_score  validation_beats_all_tickers  validation_significant_vs_all_tickers  validation_min_mean_excess_return  all_beats_all_tickers  all_significant_vs_all_tickers  all_min_mean_excess_return  selected_train_total_loss  selected_validation_policy_excess_return                                                                                                                                                     candidate_dir
+        portfolio_deep_224x8x5              32         240                8                 5      80 best_asset,best_asset_anchor,best_asset_mirror,top2_blend,oracle_softmax,forward_mean_variance,forward_risk_parity,forward_min_variance              1416                1416           -16.087197                         False                                  False                          -0.001632                  False                           False                   -0.001208                   0.672681                                 -0.000266         /Users/calvinlomax/Desktop/QuantShield/outputs/app_state/model_training_sessions/portfolio_fit/1y/20260506_111642/candidate_models/portfolio_deep_224x8x5
+    portfolio_balanced_192x6x4               1         208                8                 4      56                                     best_asset,top2_blend,oracle_softmax,forward_mean_variance,forward_risk_parity,forward_min_variance              1062                1062            12.449904                         False                                  False                          -0.001896                  False                           False                   -0.000950                   0.897362                                 -0.000530     /Users/calvinlomax/Desktop/QuantShield/outputs/app_state/model_training_sessions/portfolio_fit/1y/20260506_111642/candidate_models/portfolio_balanced_192x6x4
+ portfolio_regularized_256x8x5               9         256                8                 5      88                   best_asset,best_asset_anchor,top2_blend,oracle_softmax,forward_mean_variance,forward_risk_parity,forward_min_variance              1239                1239            12.694414                         False                                  False                          -0.001900                  False                           False                   -0.000950                   0.678581                                 -0.000533  /Users/calvinlomax/Desktop/QuantShield/outputs/app_state/model_training_sessions/portfolio_fit/1y/20260506_111642/candidate_models/portfolio_regularized_256x8x5
+        portfolio_wide_256x8x4               4         256                8                 4      68                   best_asset,best_asset_anchor,top2_blend,oracle_softmax,forward_mean_variance,forward_risk_parity,forward_min_variance              1239                1239             9.867494                         False                                  False                          -0.001900                  False                           False                   -0.000950                   0.877961                                 -0.000533         /Users/calvinlomax/Desktop/QuantShield/outputs/app_state/model_training_sessions/portfolio_fit/1y/20260506_111642/candidate_models/portfolio_wide_256x8x4
+portfolio_oracle_blend_224x8x4               5         224                8                 4      96                                                            best_asset,best_asset_anchor,top2_blend,oracle_softmax,forward_mean_variance               885                 885             5.607719                         False                                  False                          -0.001900                  False                           False                   -0.000949                   0.878938                                 -0.000533 /Users/calvinlomax/Desktop/QuantShield/outputs/app_state/model_training_sessions/portfolio_fit/1y/20260506_111642/candidate_models/portfolio_oracle_blend_224x8x4

@@ -1,0 +1,2 @@
+Index,name,description,tags,training_mode,model_size,duration_key,tickers,benchmark_mode,benchmark_ticker,benchmark_label,rebalance_frequency,lookback_window,candidate_mode,reward_comparison_mode,selected_candidate,selected_epoch,model_path
+0,20260506_111642,,[],portfolio_fit,10,1y,"['GLD', 'IEFA', 'IVV', 'QQQ', 'SPY', 'VEA', 'VOO', 'VTI', 'VTV', 'VUG']",ticker,SPY,SPY,B,63,experimental,best_of_selected,portfolio_deep_224x8x5,32,/Users/calvinlomax/Desktop/QuantShield/outputs/app_state/model_training_sessions/portfolio_fit/1y/20260506_111642/actor_critic_policy.pt
