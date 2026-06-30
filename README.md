@@ -172,7 +172,7 @@ pip install -r requirements.txt
 pip install -r requirements-app.txt
 ```
 
-This installs the full desktop stack, including PyTorch and PySide6.
+This installs the full desktop stack, including PyTorch, PySide6, and Pillow for Clyde image verification.
 
 ### Optional Editable Installs
 
@@ -187,10 +187,12 @@ pip install -e .[app]
 ### Launch The Desktop App
 
 ```bash
+export QUANTSHIELD_CLYDE_CODE=KvW3xqat6ONEDpZgQxmMRDSnf9kmpw6W
 python scripts/run_desktop_app.py
 ```
 
 The app launches the main window defined in [`src/quantshield_app/main.py`](src/quantshield_app/main.py).
+Startup now verifies that `assets/clyde.jpg` resolves to the pinned Clyde code and that the same code is present in `QUANTSHIELD_CLYDE_CODE`.
 
 ### Fetch And Cache Data
 

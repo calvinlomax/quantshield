@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+
+from quantshield_app.clyde_gate import validate_clyde_runtime_environment
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -22,6 +23,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    validate_clyde_runtime_environment()
 
     try:
         from PySide6.QtWidgets import QApplication
